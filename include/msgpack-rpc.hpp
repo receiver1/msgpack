@@ -1,0 +1,632 @@
+#pragma once
+
+#include <concepts>
+#include <cstddef>
+#include <cstdint>
+#include <expected>
+#include <functional>
+#include <memory>
+#include <optional>
+#include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <tuple>
+#include <type_traits>
+#include <utility>
+#include <vector>
+#include <unordered_map>
+
+#include "msgpack.hpp"
+
+namespace msgpack::rpc {
+
+template <std::size_t N>
+struct fixed_string {
+  constexpr fixed_string(const char (&value)[N]) {
+    for (std::size_t index = 0; index != N; ++index) {
+      data[index] = value[index];
+    }
+  }
+
+  [[nodiscard]] constexpr operator std::string_view() const noexcept {
+    return {data, N - 1};
+  }
+
+  [[nodiscard]] constexpr auto size() const noexcept -> std::size_t {
+    return N - 1;
+  }
+
+  char data[N]{};
+};
+
+template <std::size_t N>
+fixed_string(const char (&)[N]) -> fixed_string<N>;
+
+enum class errc {
+  ok = 0,
+  invalid_response,
+  invalid_response_type,
+  response_result_required,
+  response_result_must_be_nil,
+  duplicate_response,
+  unknown_response_id,
+  request_id_exhausted,
+  remote_error,
+  dangling_call_handle,
+};
+
+class error_category final : public std::error_category {
+ public:
+  [[nodiscard]] const char* name() const noexcept override {
+    return "msgpack-rpc";
+  }
+
+  [[nodiscard]] auto message(int condition) const -> std::string override {
+    switch (static_cast<errc>(condition)) {
+      case errc::ok:
+        return "ok";
+      case errc::invalid_response:
+        return "invalid response";
+      case errc::invalid_response_type:
+        return "invalid response type";
+      case errc::response_result_required:
+        return "response result is required";
+      case errc::response_result_must_be_nil:
+        return "response result must be nil";
+      case errc::duplicate_response:
+        return "duplicate response";
+      case errc::unknown_response_id:
+        return "unknown response id";
+      case errc::request_id_exhausted:
+        return "request id space exhausted";
+      case errc::remote_error:
+        return "remote error";
+      case errc::dangling_call_handle:
+        return "dangling call handle";
+    }
+
+    return "unknown msgpack-rpc error";
+  }
+};
+
+inline const error_category k_error_category{};
+
+[[nodiscard]] inline auto make_error_code(errc code) -> std::error_code {
+  return {static_cast<int>(code), k_error_category};
+}
+
+inline constexpr std::uint8_t k_request_type = 0;
+inline constexpr std::uint8_t k_response_type = 1;
+inline constexpr std::uint8_t k_notification_type = 2;
+
+template <typename Transport>
+concept transport =
+    requires(Transport& value, const typename Transport::endpoint_type& endpoint,
+             std::span<const std::byte> bytes) {
+      typename Transport::endpoint_type;
+      {
+        value.connect(endpoint)
+      } -> std::same_as<std::expected<void, std::error_code>>;
+      {
+        value.send(bytes)
+      } -> std::same_as<std::expected<void, std::error_code>>;
+      {
+        value.receive()
+      } -> std::same_as<
+          std::expected<std::optional<std::vector<std::byte>>, std::error_code>>;
+    };
+
+namespace detail {
+
+[[nodiscard]] inline auto invalid_response()
+    -> std::unexpected<std::error_code> {
+  return std::unexpected(make_error_code(errc::invalid_response));
+}
+
+[[nodiscard]] inline auto parse_response_id(std::span<const std::byte> bytes)
+    -> std::expected<std::uint32_t, std::error_code> {
+  msgpack::reader in{bytes};
+
+  auto size = in.read_array_header();
+  if (!size) {
+    return std::unexpected(size.error());
+  }
+  if (*size != 4) {
+    return invalid_response();
+  }
+
+  auto type = in.read_integer<std::uint8_t>();
+  if (!type) {
+    return std::unexpected(type.error());
+  }
+  if (*type != k_response_type) {
+    return std::unexpected(make_error_code(errc::invalid_response_type));
+  }
+
+  auto msgid = in.read_integer<std::uint32_t>();
+  if (!msgid) {
+    return std::unexpected(msgid.error());
+  }
+
+  auto status = in.skip();
+  if (!status) {
+    return std::unexpected(status.error());
+  }
+  status = in.skip();
+  if (!status) {
+    return std::unexpected(status.error());
+  }
+
+  if (in.remaining() != 0) {
+    return invalid_response();
+  }
+
+  return *msgid;
+}
+
+inline auto consume_nil(msgpack::reader& in)
+    -> std::expected<void, std::error_code> {
+  auto nil = msgpack::unpack<std::nullptr_t>(in);
+  if (!nil) {
+    return std::unexpected(
+        nil.error() == msgpack::make_error_code(msgpack::errc::type_mismatch)
+            ? make_error_code(errc::response_result_must_be_nil)
+            : nil.error());
+  }
+  return {};
+}
+
+template <typename>
+struct function_traits;
+
+template <typename Return, typename... Args>
+struct function_traits<Return(Args...)> {
+  using args_tuple = std::tuple<std::remove_cvref_t<Args>...>;
+};
+
+template <typename Return, typename... Args>
+struct function_traits<Return (*)(Args...)> : function_traits<Return(Args...)> {
+};
+
+template <typename Class, typename Return, typename... Args>
+struct function_traits<Return (Class::*)(Args...)>
+    : function_traits<Return(Args...)> {};
+
+template <typename Class, typename Return, typename... Args>
+struct function_traits<Return (Class::*)(Args...) const>
+    : function_traits<Return(Args...)> {};
+
+template <typename Callback>
+struct callback_signature : function_traits<decltype(&std::remove_cvref_t<Callback>::operator())> {
+};
+
+template <typename Return, typename... Args>
+struct callback_signature<Return (*)(Args...)> : function_traits<Return(Args...)> {
+};
+
+template <typename Return, typename... Args>
+struct callback_signature<Return(Args...)> : function_traits<Return(Args...)> {
+};
+
+template <typename Tuple>
+struct tuple_tail;
+
+template <typename Head, typename... Tail>
+struct tuple_tail<std::tuple<Head, Tail...>> {
+  using type = std::tuple<Tail...>;
+};
+
+template <typename Callback>
+using callback_args_tuple_t = typename callback_signature<std::remove_cvref_t<Callback>>::args_tuple;
+
+template <typename Callback>
+using callback_result_tuple_t =
+    typename tuple_tail<callback_args_tuple_t<Callback>>::type;
+
+template <typename Callback>
+inline constexpr bool callback_invocable_v =
+    (std::tuple_size_v<callback_args_tuple_t<Callback>> >= 1) &&
+    std::same_as<std::tuple_element_t<0, callback_args_tuple_t<Callback>>,
+                 std::error_code>;
+
+template <typename Callback, typename Tuple, std::size_t... Index>
+inline auto invoke_error_with_defaults(Callback& callback, std::error_code error,
+                                       std::index_sequence<Index...>) -> void {
+  std::invoke(callback, error, std::tuple_element_t<Index, Tuple>{}...);
+}
+
+template <typename Tuple>
+inline constexpr bool tuple_default_constructible_v =
+    []<std::size_t... Index>(std::index_sequence<Index...>) {
+      return (std::default_initializable<std::tuple_element_t<Index, Tuple>> &&
+              ...);
+    }(std::make_index_sequence<std::tuple_size_v<Tuple>>{});
+
+template <typename Callback>
+inline auto invoke_callback_error(Callback& callback, std::error_code error)
+    -> void {
+  using result_tuple = callback_result_tuple_t<Callback>;
+
+  if constexpr (std::invocable<Callback&, std::error_code>) {
+    std::invoke(callback, error);
+  } else if constexpr (tuple_default_constructible_v<result_tuple>) {
+    invoke_error_with_defaults<Callback, result_tuple>(
+        callback, error, std::make_index_sequence<std::tuple_size_v<result_tuple>>{});
+  } else {
+    static_assert(std::invocable<Callback&, std::error_code>,
+                  "Callback must accept std::error_code or have "
+                  "default-constructible result arguments");
+  }
+}
+
+template <typename Callback, typename Tuple, std::size_t... Index>
+inline auto invoke_callback_success_tuple(Callback& callback, Tuple&& values,
+                                          std::index_sequence<Index...>)
+    -> void {
+  std::invoke(callback, std::error_code{},
+              std::get<Index>(std::forward<Tuple>(values))...);
+}
+
+template <typename Tuple>
+[[nodiscard]] inline auto decode_result_tuple(msgpack::reader& in)
+    -> std::expected<Tuple, std::error_code> {
+  if constexpr (std::tuple_size_v<Tuple> == 0) {
+    auto status = consume_nil(in);
+    if (!status) {
+      return std::unexpected(status.error());
+    }
+    return Tuple{};
+  } else if constexpr (std::tuple_size_v<Tuple> == 1) {
+    using value_type = std::tuple_element_t<0, Tuple>;
+    auto value = msgpack::unpack<value_type>(in);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    return Tuple{std::move(*value)};
+  } else {
+    auto values = msgpack::unpack<Tuple>(in);
+    if (!values) {
+      return std::unexpected(values.error());
+    }
+    return std::move(*values);
+  }
+}
+
+template <typename Callback>
+inline auto invoke_response_callback(Callback& callback,
+                                     std::span<const std::byte> bytes) -> void {
+  using result_tuple = callback_result_tuple_t<Callback>;
+  msgpack::reader in{bytes};
+
+  auto size = in.read_array_header();
+  if (!size) {
+    invoke_callback_error(callback, size.error());
+    return;
+  }
+  if (*size != 4) {
+    invoke_callback_error(callback, make_error_code(errc::invalid_response));
+    return;
+  }
+
+  auto type = in.read_integer<std::uint8_t>();
+  if (!type) {
+    invoke_callback_error(callback, type.error());
+    return;
+  }
+  if (*type != k_response_type) {
+    invoke_callback_error(callback, make_error_code(errc::invalid_response_type));
+    return;
+  }
+
+  auto skip_msgid = in.read_integer<std::uint32_t>();
+  if (!skip_msgid) {
+    invoke_callback_error(callback, skip_msgid.error());
+    return;
+  }
+
+  auto marker = in.peek();
+  if (!marker) {
+    invoke_callback_error(callback, marker.error());
+    return;
+  }
+  if (*marker != std::byte{0xc0}) {
+    auto status = in.skip();
+    if (!status) {
+      invoke_callback_error(callback, status.error());
+      return;
+    }
+    auto nil = consume_nil(in);
+    if (!nil) {
+      invoke_callback_error(callback, nil.error());
+      return;
+    }
+    if (in.remaining() != 0) {
+      invoke_callback_error(callback, make_error_code(errc::invalid_response));
+      return;
+    }
+    invoke_callback_error(callback, make_error_code(errc::remote_error));
+    return;
+  }
+
+  auto error_nil = consume_nil(in);
+  if (!error_nil) {
+    invoke_callback_error(callback, error_nil.error());
+    return;
+  }
+
+  auto result = decode_result_tuple<result_tuple>(in);
+  if (!result) {
+    invoke_callback_error(callback, result.error());
+    return;
+  }
+  if (in.remaining() != 0) {
+    invoke_callback_error(callback, make_error_code(errc::invalid_response));
+    return;
+  }
+
+  invoke_callback_success_tuple(
+      callback, std::move(*result),
+      std::make_index_sequence<std::tuple_size_v<result_tuple>>{});
+}
+
+template <typename... Args>
+[[nodiscard]] inline auto make_request_bytes(std::uint32_t msgid,
+                                             std::string_view method,
+                                             Args&&... args)
+    -> std::expected<std::vector<std::byte>, std::error_code> {
+  return msgpack::pack(std::tuple{
+      k_request_type, msgid, std::string{method},
+      std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+}
+
+template <typename... Args>
+[[nodiscard]] inline auto make_notification_bytes(std::string_view method,
+                                                  Args&&... args)
+    -> std::expected<std::vector<std::byte>, std::error_code> {
+  return msgpack::pack(std::tuple{
+      k_notification_type, std::string{method},
+      std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+}
+
+struct pending_state {
+  std::optional<std::error_code> local_error{};
+  std::optional<std::vector<std::byte>> response{};
+  std::move_only_function<void()> callback{};
+
+  [[nodiscard]] auto ready() const noexcept -> bool {
+    return local_error.has_value() || response.has_value();
+  }
+};
+
+inline auto resolve_pending_error(const std::shared_ptr<pending_state>& state,
+                                  std::error_code error) -> void {
+  state->local_error = error;
+  if (state->callback) {
+    auto callback = std::move(state->callback);
+    state->callback = {};
+    callback();
+  }
+}
+
+inline auto resolve_pending_response(const std::shared_ptr<pending_state>& state,
+                                     std::vector<std::byte> response) -> void {
+  state->response.emplace(std::move(response));
+  if (state->callback) {
+    auto callback = std::move(state->callback);
+    state->callback = {};
+    callback();
+  }
+}
+
+template <typename Callback>
+inline auto attach_then(const std::shared_ptr<pending_state>& state,
+    Callback&& callback) -> void {
+  auto callback_ptr =
+      std::make_shared<std::decay_t<Callback>>(std::forward<Callback>(callback));
+  if (state->local_error) {
+    invoke_callback_error(*callback_ptr, *state->local_error);
+    return;
+  }
+  if (state->response) {
+    invoke_response_callback(*callback_ptr, *state->response);
+    return;
+  }
+
+  state->callback = [state, callback = std::move(callback_ptr)]() mutable {
+    if (state->local_error) {
+      invoke_callback_error(*callback, *state->local_error);
+      return;
+    }
+    if (state->response) {
+      invoke_response_callback(*callback, *state->response);
+    }
+  };
+}
+
+}  // namespace detail
+
+template <typename Transport>
+  requires transport<Transport>
+class basic_client;
+
+template <typename Transport>
+  requires transport<Transport>
+class pending_call {
+ public:
+  pending_call() = default;
+
+  [[nodiscard]] auto msgid() const noexcept -> std::uint32_t { return msgid_; }
+  [[nodiscard]] auto ready() const noexcept -> bool {
+    return state_ != nullptr && state_->ready();
+  }
+
+  template <typename Callback>
+    requires(detail::callback_invocable_v<std::decay_t<Callback>>)
+  auto then(Callback&& callback) -> pending_call& {
+    if (state_ == nullptr) {
+      return *this;
+    }
+
+    detail::attach_then(state_, std::forward<Callback>(callback));
+    return *this;
+  }
+
+ private:
+  friend class basic_client<Transport>;
+
+  pending_call(std::uint32_t msgid, std::shared_ptr<detail::pending_state> state)
+      : msgid_(msgid), state_(std::move(state)) {}
+
+  std::uint32_t msgid_{0};
+  std::shared_ptr<detail::pending_state> state_{};
+};
+
+template <typename Transport>
+  requires transport<Transport>
+class basic_client {
+ public:
+  using transport_type = Transport;
+  using endpoint_type = typename Transport::endpoint_type;
+
+  basic_client() = delete;
+  basic_client(const basic_client&) = delete;
+  auto operator=(const basic_client&) -> basic_client& = delete;
+  basic_client(basic_client&&) noexcept = default;
+  auto operator=(basic_client&&) noexcept -> basic_client& = default;
+
+  explicit basic_client(Transport transport)
+      : transport_(std::move(transport)) {}
+
+  [[nodiscard]] static auto open(Transport transport, const endpoint_type& endpoint)
+      -> std::expected<basic_client, std::error_code> {
+    auto status = transport.connect(endpoint);
+    if (!status) {
+      return std::unexpected(status.error());
+    }
+    return basic_client{std::move(transport)};
+  }
+
+  [[nodiscard]] auto transport_handle() noexcept -> Transport& {
+    return transport_;
+  }
+
+  [[nodiscard]] auto transport_handle() const noexcept -> const Transport& {
+    return transport_;
+  }
+
+  [[nodiscard]] auto outstanding() const noexcept -> std::size_t {
+    return pending_.size();
+  }
+
+  template <fixed_string Method, typename... Args>
+  auto call(Args&&... args)
+      -> pending_call<Transport> {
+    return call(std::string_view{Method}, std::forward<Args>(args)...);
+  }
+
+  template <typename... Args>
+  auto call(std::string_view method, Args&&... args)
+      -> pending_call<Transport> {
+    auto state = std::make_shared<detail::pending_state>();
+
+    auto msgid = allocate_msgid();
+    if (!msgid) {
+      detail::resolve_pending_error(state, msgid.error());
+      return pending_call<Transport>{0, std::move(state)};
+    }
+
+    auto bytes = detail::make_request_bytes(*msgid, method,
+                                            std::forward<Args>(args)...);
+    if (!bytes) {
+      detail::resolve_pending_error(state, bytes.error());
+      return pending_call<Transport>{*msgid, std::move(state)};
+    }
+
+    auto status = transport_.send(*bytes);
+    if (!status) {
+      detail::resolve_pending_error(state, status.error());
+      return pending_call<Transport>{*msgid, std::move(state)};
+    }
+
+    pending_.emplace(*msgid, pending_entry{state});
+    return pending_call<Transport>{*msgid, std::move(state)};
+  }
+
+  template <typename... Args>
+  auto notify(std::string_view method, Args&&... args)
+      -> std::expected<void, std::error_code> {
+    auto bytes = detail::make_notification_bytes(method,
+                                                 std::forward<Args>(args)...);
+    if (!bytes) {
+      return std::unexpected(bytes.error());
+    }
+    return transport_.send(*bytes);
+  }
+
+  template <fixed_string Method, typename... Args>
+  auto notify(Args&&... args) -> std::expected<void, std::error_code> {
+    return notify(std::string_view{Method}, std::forward<Args>(args)...);
+  }
+
+  auto poll() -> std::expected<bool, std::error_code> {
+    auto bytes = transport_.receive();
+    if (!bytes) {
+      return std::unexpected(bytes.error());
+    }
+    if (!bytes->has_value()) {
+      return false;
+    }
+
+    auto msgid = detail::parse_response_id(**bytes);
+    if (!msgid) {
+      return std::unexpected(msgid.error());
+    }
+    auto it = pending_.find(*msgid);
+    if (it == pending_.end()) {
+      return std::unexpected(make_error_code(errc::unknown_response_id));
+    }
+
+    auto state = std::move(it->second.state);
+    pending_.erase(it);
+    detail::resolve_pending_response(state, std::move(**bytes));
+    return true;
+  }
+
+ private:
+  struct pending_entry {
+    std::shared_ptr<detail::pending_state> state{};
+  };
+
+  [[nodiscard]] auto allocate_msgid()
+      -> std::expected<std::uint32_t, std::error_code> {
+    const auto start = next_msgid_;
+
+    do {
+      const auto candidate = next_msgid_;
+      ++next_msgid_;
+
+      if (!pending_.contains(candidate)) {
+        return candidate;
+      }
+    } while (next_msgid_ != start);
+
+    return std::unexpected(make_error_code(errc::request_id_exhausted));
+  }
+
+  Transport transport_;
+  std::uint32_t next_msgid_{0};
+  std::unordered_map<std::uint32_t, pending_entry> pending_{};
+};
+
+template <typename Transport>
+using client = basic_client<Transport>;
+
+}  // namespace msgpack::rpc
+
+namespace std {
+
+template <>
+struct is_error_code_enum<msgpack::rpc::errc> : true_type {};
+
+}  // namespace std

@@ -1,0 +1,15 @@
+[project]
+name = "msgpack"
+msvc-runtime = "static"
+
+[target.msgpack_example]
+type = "executable" # static, shared
+sources = ["examples/msgpack.cpp"]
+include-directories = ["include"]
+compile-features = ["cxx_std_23"]
+
+[target.msgpack_rpc_example]
+type = "executable" # static, shared
+sources = ["examples/msgpack-rpc.cpp"]
+include-directories = ["include"]
+compile-features = ["cxx_std_23"]
