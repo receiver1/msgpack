@@ -4,6 +4,7 @@
 + Full compliance with specification
 + Separated MessagePack RPC spec
 + Charged with simple [qlibs/reflect](https://github.com/qlibs/reflect)
++ Compiled with `-fno-exceptions`
 
 ## MessagePack Specification Compliance
 | Feature | Encode | Decode | Mapping |                                                     
