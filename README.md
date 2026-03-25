@@ -38,10 +38,10 @@
 | Reserved marker `0xC1` | ❌ | ✅ | Invalid marker error on decode |      
 
 ## Additional features
-[x] MessagePack ships with `reader`/`writer` for streaming  
-[x] MessagePack RPC designed in event-driven style  
-[x] Implement your own transport for MessagePack RPC
-[x] Disable reflection with `MSGPACK_DISABLE_REFLECT`
+- [x] MessagePack ships with `reader`/`writer` for streaming  
+- [x] MessagePack RPC designed in event-driven style  
+- [x] Implement your own transport for MessagePack RPC
+- [x] Disable reflection with `MSGPACK_DISABLE_REFLECT`
 
 ## Examples
 Examples can be found in the `examples/` directory.
