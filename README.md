@@ -1,8 +1,8 @@
 # MessagePack
 + Completed in header-only format
 + Loaded with the C++23 standard
-+ Full compliance with specification
-+ Separated MessagePack RPC spec
++ Full compliance with [specification](https://github.com/msgpack/msgpack/blob/master/spec.md)
++ Separated [MessagePack RPC spec](https://github.com/msgpack-rpc/msgpack-rpc/blob/master/spec.md)
 + Charged with simple [qlibs/reflect](https://github.com/qlibs/reflect)
 + Compiled with `-fno-exceptions`
 
