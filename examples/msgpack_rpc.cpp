@@ -75,6 +75,36 @@ auto enqueue_sum_response(scripted_transport& transport, std::uint32_t msgid,
   return {};
 }
 
+template <typename... Args>
+auto enqueue_request(scripted_transport& transport, std::uint32_t msgid,
+                     std::string_view method, Args&&... args)
+    -> std::expected<void, std::error_code> {
+  auto bytes = msgpack::pack(
+      std::tuple{msgpack::rpc::k_request_type, msgid, std::string{method},
+                 std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+  if (!bytes) {
+    return std::unexpected(bytes.error());
+  }
+
+  transport.incoming.push_back(std::move(*bytes));
+  return {};
+}
+
+template <typename... Args>
+auto enqueue_notification(scripted_transport& transport, std::string_view method,
+                          Args&&... args)
+    -> std::expected<void, std::error_code> {
+  auto bytes = msgpack::pack(
+      std::tuple{msgpack::rpc::k_notification_type, std::string{method},
+                 std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+  if (!bytes) {
+    return std::unexpected(bytes.error());
+  }
+
+  transport.incoming.push_back(std::move(*bytes));
+  return {};
+}
+
 int main() {
   auto client_result = msgpack::rpc::client<scripted_transport>::open(
       scripted_transport{}, "loopback://demo");
@@ -88,8 +118,16 @@ int main() {
 
   bool first_called = false;
   bool second_called = false;
+  bool tick_called = false;
   int first_value = 0;
   int second_value = 0;
+  int tick_value = 0;
+
+  client.bind<"mul">([](int a, int b) -> int { return a * b; });
+  client.bind<"tick">([&](int value) {
+    tick_called = true;
+    tick_value = value;
+  });
 
   auto first = client.call<"sum">(20, 22);
   auto second = client.call<"sum">(7, 8);
@@ -135,7 +173,23 @@ int main() {
     return EXIT_FAILURE;
   }
 
-  for (int step = 0; step < 2; ++step) {
+  auto inbound_request =
+      enqueue_request(client.transport_handle(), 100, "mul", 6, 7);
+  if (!inbound_request) {
+    printf("rpc preload error: %s\n",
+           inbound_request.error().message().c_str());
+    return EXIT_FAILURE;
+  }
+
+  auto inbound_notification =
+      enqueue_notification(client.transport_handle(), "tick", 99);
+  if (!inbound_notification) {
+    printf("rpc preload error: %s\n",
+           inbound_notification.error().message().c_str());
+    return EXIT_FAILURE;
+  }
+
+  for (int step = 0; step < 4; ++step) {
     auto polled = client.poll();
     if (!polled) {
       printf("rpc poll error: %s\n", polled.error().message().c_str());
@@ -143,13 +197,14 @@ int main() {
     }
   }
 
-  if (!first_called || !second_called) {
+  if (!first_called || !second_called || !tick_called) {
     printf("rpc callback was not called\n");
     return EXIT_FAILURE;
   }
 
   printf("sum(20, 22) = %d\n", first_value);
   printf("sum(7, 8) = %d\n", second_value);
+  printf("tick = %d\n", tick_value);
   printf("connected to: %s\n", client.transport_handle().endpoint.c_str());
   printf("sent packets: %zu\n", client.transport_handle().outgoing.size());
 
