@@ -46,11 +46,13 @@ Short RPC overview:
 // Transport independent
 auto client_result = msgpack::rpc
   ::open(scripted_transport{}, "loopback://demo");
-// No exceptions
+
+// Exceptions-free
 if (!client_result.has_value()) {
   return;
 }
 auto client = std::move(*client_result);
+
 // Event-driven
 client.call<"sum">(5, 10)
   .then([](std::error_code error, int result) -> void {
@@ -63,10 +65,11 @@ client.call<"sum">(5, 10)
     std::println("sum: {:d}", result);
   });
 client.notify<"ping">();
+
 // Full-duplex
 client.bind<"sum">([](int a, int b) -> std::expected<int, std::string> {
   if (a > 100) {
-    // Returrn error with
+    // Throw error simple
     return std::unexpected("a too large");
   }
 
@@ -75,8 +78,13 @@ client.bind<"sum">([](int a, int b) -> std::expected<int, std::string> {
 client.bind<"ping">([]() -> void {
   std::println("ping notify");
 });
-// Execution flow
-while (1) {
-  client.poll();
-}
+
+// Thread-safe
+std::thread([]() {
+  // Execution flow
+  while (1) {
+    client.poll();
+    // <other stuff>
+  }
+});
 ```
