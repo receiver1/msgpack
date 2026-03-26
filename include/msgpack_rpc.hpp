@@ -835,16 +835,6 @@ class basic_client {
   explicit basic_client(Transport transport)
       : transport_(std::move(transport)) {}
 
-  [[nodiscard]] static auto open(Transport transport,
-                                 const endpoint_type& endpoint)
-      -> std::expected<basic_client, std::error_code> {
-    auto status = transport.connect(endpoint);
-    if (!status) {
-      return std::unexpected(status.error());
-    }
-    return basic_client{std::move(transport)};
-  }
-
   [[nodiscard]] auto transport_handle() noexcept -> Transport& {
     return transport_;
   }
@@ -1061,7 +1051,11 @@ template <typename Transport>
 [[nodiscard]] inline auto open(
     Transport transport, const typename Transport::endpoint_type& endpoint)
     -> std::expected<client<Transport>, std::error_code> {
-  return client<Transport>::open(std::move(transport), endpoint);
+  auto status = transport.connect(endpoint);
+  if (!status) {
+    return std::unexpected(status.error());
+  }
+  return client<Transport>{std::move(transport)};
 }
 
 }  // namespace msgpack::rpc
