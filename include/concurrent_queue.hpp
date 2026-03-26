@@ -7,11 +7,9 @@
 #include <memory>
 #include <new>
 #include <optional>
-#include <type_traits>
 #include <utility>
 
 namespace msgpack::rpc {
-
 // Bounded lock-free multi-producer, single-consumer queue.
 // Producers may call push/emplace concurrently.
 // Exactly one consumer may call pop/drain methods.
@@ -136,9 +134,9 @@ class concurrent_queue {
                               static_cast<std::intptr_t>(position);
 
       if (difference == 0) {
-        if (enqueue_pos_.compare_exchange_weak(
-                position, position + 1, std::memory_order_relaxed,
-                std::memory_order_relaxed)) {
+        if (enqueue_pos_.compare_exchange_weak(position, position + 1,
+                                               std::memory_order_relaxed,
+                                               std::memory_order_relaxed)) {
           return std::pair{slot, position};
         }
         continue;

@@ -6,6 +6,7 @@
 #include <expected>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
@@ -390,31 +391,46 @@ template <typename... Args>
 }
 
 struct pending_state {
+  mutable std::mutex mutex{};
   std::optional<std::error_code> local_error{};
-  std::optional<std::vector<std::byte>> response{};
+  std::shared_ptr<const std::vector<std::byte>> response{};
   std::move_only_function<void()> callback{};
 
   [[nodiscard]] auto ready() const noexcept -> bool {
-    return local_error.has_value() || response.has_value();
+    std::lock_guard lock{mutex};
+    return local_error.has_value() || static_cast<bool>(response);
   }
 };
 
 inline auto resolve_pending_error(const std::shared_ptr<pending_state>& state,
                                   std::error_code error) -> void {
-  state->local_error = error;
-  if (state->callback) {
-    auto callback = std::move(state->callback);
-    state->callback = {};
+  std::move_only_function<void()> callback{};
+  {
+    std::lock_guard lock{state->mutex};
+    state->local_error = error;
+    if (state->callback) {
+      callback = std::move(state->callback);
+      state->callback = {};
+    }
+  }
+  if (callback) {
     callback();
   }
 }
 
 inline auto resolve_pending_response(const std::shared_ptr<pending_state>& state,
                                      std::vector<std::byte> response) -> void {
-  state->response.emplace(std::move(response));
-  if (state->callback) {
-    auto callback = std::move(state->callback);
-    state->callback = {};
+  std::move_only_function<void()> callback{};
+  {
+    std::lock_guard lock{state->mutex};
+    state->response =
+        std::make_shared<const std::vector<std::byte>>(std::move(response));
+    if (state->callback) {
+      callback = std::move(state->callback);
+      state->callback = {};
+    }
+  }
+  if (callback) {
     callback();
   }
 }
@@ -424,24 +440,48 @@ inline auto attach_then(const std::shared_ptr<pending_state>& state,
     Callback&& callback) -> void {
   auto callback_ptr =
       std::make_shared<std::decay_t<Callback>>(std::forward<Callback>(callback));
-  if (state->local_error) {
-    invoke_callback_error(*callback_ptr, *state->local_error);
-    return;
-  }
-  if (state->response) {
-    invoke_response_callback(*callback_ptr, *state->response);
-    return;
-  }
+  std::optional<std::error_code> local_error{};
+  std::shared_ptr<const std::vector<std::byte>> response{};
 
-  state->callback = [state, callback = std::move(callback_ptr)]() mutable {
+  {
+    std::lock_guard lock{state->mutex};
     if (state->local_error) {
-      invoke_callback_error(*callback, *state->local_error);
+      local_error = *state->local_error;
+    } else if (state->response) {
+      response = state->response;
+    } else {
+      state->callback = [state, callback = std::move(callback_ptr)]() mutable {
+        std::optional<std::error_code> ready_error{};
+        std::shared_ptr<const std::vector<std::byte>> ready_response{};
+
+        {
+          std::lock_guard lock{state->mutex};
+          if (state->local_error) {
+            ready_error = *state->local_error;
+          } else {
+            ready_response = state->response;
+          }
+        }
+
+        if (ready_error) {
+          invoke_callback_error(*callback, *ready_error);
+          return;
+        }
+        if (ready_response) {
+          invoke_response_callback(*callback, *ready_response);
+        }
+      };
       return;
     }
-    if (state->response) {
-      invoke_response_callback(*callback, *state->response);
-    }
-  };
+  }
+
+  if (local_error) {
+    invoke_callback_error(*callback_ptr, *local_error);
+    return;
+  }
+  if (response) {
+    invoke_response_callback(*callback_ptr, *response);
+  }
 }
 
 }  // namespace detail
@@ -492,8 +532,26 @@ class basic_client {
   basic_client() = delete;
   basic_client(const basic_client&) = delete;
   auto operator=(const basic_client&) -> basic_client& = delete;
-  basic_client(basic_client&&) noexcept = default;
-  auto operator=(basic_client&&) noexcept -> basic_client& = default;
+  basic_client(basic_client&& other) noexcept(
+      std::is_nothrow_move_constructible_v<Transport>)
+      : transport_(std::move(other.transport_)),
+        next_msgid_(other.next_msgid_),
+        pending_(std::move(other.pending_)) {
+    other.next_msgid_ = 0;
+  }
+  auto operator=(basic_client&& other) noexcept(
+      std::is_nothrow_move_assignable_v<Transport>) -> basic_client& {
+    if (this == &other) {
+      return *this;
+    }
+
+    std::scoped_lock lock{mutex_, other.mutex_};
+    transport_ = std::move(other.transport_);
+    next_msgid_ = other.next_msgid_;
+    pending_ = std::move(other.pending_);
+    other.next_msgid_ = 0;
+    return *this;
+  }
 
   explicit basic_client(Transport transport)
       : transport_(std::move(transport)) {}
@@ -516,6 +574,7 @@ class basic_client {
   }
 
   [[nodiscard]] auto outstanding() const noexcept -> std::size_t {
+    std::lock_guard lock{mutex_};
     return pending_.size();
   }
 
@@ -529,28 +588,37 @@ class basic_client {
   auto call(std::string_view method, Args&&... args)
       -> pending_call<Transport> {
     auto state = std::make_shared<detail::pending_state>();
-
-    auto msgid = allocate_msgid();
-    if (!msgid) {
-      detail::resolve_pending_error(state, msgid.error());
-      return pending_call<Transport>{0, std::move(state)};
+    std::uint32_t msgid = 0;
+    {
+      std::lock_guard lock{mutex_};
+      auto allocated = allocate_msgid();
+      if (!allocated) {
+        detail::resolve_pending_error(state, allocated.error());
+        return pending_call<Transport>{0, std::move(state)};
+      }
+      msgid = *allocated;
     }
 
-    auto bytes = detail::make_request_bytes(*msgid, method,
+    auto bytes = detail::make_request_bytes(msgid, method,
                                             std::forward<Args>(args)...);
     if (!bytes) {
       detail::resolve_pending_error(state, bytes.error());
-      return pending_call<Transport>{*msgid, std::move(state)};
+      return pending_call<Transport>{msgid, std::move(state)};
     }
 
-    auto status = transport_.send(*bytes);
-    if (!status) {
-      detail::resolve_pending_error(state, status.error());
-      return pending_call<Transport>{*msgid, std::move(state)};
+    {
+      std::lock_guard lock{mutex_};
+      pending_.emplace(msgid, pending_entry{state});
+
+      auto status = transport_.send(*bytes);
+      if (!status) {
+        pending_.erase(msgid);
+        detail::resolve_pending_error(state, status.error());
+        return pending_call<Transport>{msgid, std::move(state)};
+      }
     }
 
-    pending_.emplace(*msgid, pending_entry{state});
-    return pending_call<Transport>{*msgid, std::move(state)};
+    return pending_call<Transport>{msgid, std::move(state)};
   }
 
   template <typename... Args>
@@ -561,6 +629,7 @@ class basic_client {
     if (!bytes) {
       return std::unexpected(bytes.error());
     }
+    std::lock_guard lock{mutex_};
     return transport_.send(*bytes);
   }
 
@@ -570,26 +639,34 @@ class basic_client {
   }
 
   auto poll() -> std::expected<bool, std::error_code> {
-    auto bytes = transport_.receive();
-    if (!bytes) {
-      return std::unexpected(bytes.error());
-    }
-    if (!bytes->has_value()) {
-      return false;
+    std::shared_ptr<detail::pending_state> state{};
+    std::vector<std::byte> response{};
+
+    {
+      std::lock_guard lock{mutex_};
+      auto bytes = transport_.receive();
+      if (!bytes) {
+        return std::unexpected(bytes.error());
+      }
+      if (!bytes->has_value()) {
+        return false;
+      }
+
+      auto msgid = detail::parse_response_id(**bytes);
+      if (!msgid) {
+        return std::unexpected(msgid.error());
+      }
+      auto it = pending_.find(*msgid);
+      if (it == pending_.end()) {
+        return std::unexpected(make_error_code(errc::unknown_response_id));
+      }
+
+      state = std::move(it->second.state);
+      pending_.erase(it);
+      response = std::move(**bytes);
     }
 
-    auto msgid = detail::parse_response_id(**bytes);
-    if (!msgid) {
-      return std::unexpected(msgid.error());
-    }
-    auto it = pending_.find(*msgid);
-    if (it == pending_.end()) {
-      return std::unexpected(make_error_code(errc::unknown_response_id));
-    }
-
-    auto state = std::move(it->second.state);
-    pending_.erase(it);
-    detail::resolve_pending_response(state, std::move(**bytes));
+    detail::resolve_pending_response(state, std::move(response));
     return true;
   }
 
@@ -615,6 +692,7 @@ class basic_client {
   }
 
   Transport transport_;
+  mutable std::mutex mutex_{};
   std::uint32_t next_msgid_{0};
   std::unordered_map<std::uint32_t, pending_entry> pending_{};
 };

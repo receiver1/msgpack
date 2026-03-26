@@ -60,7 +60,7 @@ endif()
 # Target: msgpack_rpc_example
 set(msgpack_rpc_example_SOURCES
 	cmake.toml
-	"examples/msgpack-rpc.cpp"
+	"examples/msgpack_rpc.cpp"
 )
 
 add_executable(msgpack_rpc_example)
