@@ -1,0 +1,21 @@
+[target.msgpack_spec]                                                                                                                                                              
+type = "executable"                                                                                                                                                                     
+sources = ["msgpack_spec.cpp"]                                                                                                                                               
+include-directories = ["../include"]                                                                                                                                                       
+compile-features = ["cxx_std_23"]            
+
+[target.msgpack_rpc_spec]                                                                                                                                                              
+type = "executable"                                                                                                                                                                     
+sources = ["msgpack_rpc_spec.cpp"]                                                                                                                                               
+include-directories = ["../include"]                                                                                                                                                       
+compile-features = ["cxx_std_23"]                                                                                                                                                       
+                                                                                                                                                  
+[[test]]                                                                                                                                                                                
+name = "msgpack_spec"                                                                                                                                                              
+command = "$<TARGET_FILE:msgpack_spec>"                                                                                                                                            
+configurations = ["Debug", "Release", "RelWithDebInfo", "MinSizeRelease"]
+
+[[test]]                                                                                                                                                                                
+name = "msgpack_rpc_spec"                                                                                                                                                              
+command = "$<TARGET_FILE:msgpack_rpc_spec>"                                                                                                                                            
+configurations = ["Debug", "Release", "RelWithDebInfo", "MinSizeRelease"]

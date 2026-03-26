@@ -4,6 +4,7 @@
 #include <bit>
 #include <chrono>
 #include <cstddef>
+#include <concepts>
 #include <cstdint>
 #include <deque>
 #include <expected>
@@ -13,6 +14,7 @@
 #include <list>
 #include <map>
 #include <optional>
+#include <ranges>
 #include <set>
 #include <span>
 #include <string>
@@ -157,27 +159,26 @@ enum class marker : std::uint8_t {
 };
 
 template <typename T>
-inline constexpr bool is_char_array_v =
+concept char_array =
     std::is_array_v<remove_cvref_t<T>> &&
-    std::is_same_v<std::remove_cv_t<std::remove_extent_t<remove_cvref_t<T>>>,
-                   char>;
+    std::same_as<std::remove_cv_t<std::remove_extent_t<remove_cvref_t<T>>>,
+                 char>;
 
 template <typename T>
-inline constexpr bool is_c_string_pointer_v =
-    std::is_same_v<remove_cvref_t<T>, const char*> ||
-    std::is_same_v<remove_cvref_t<T>, char*>;
+concept c_string_pointer =
+    std::same_as<remove_cvref_t<T>, const char*> ||
+    std::same_as<remove_cvref_t<T>, char*>;
 
 template <typename T>
-inline constexpr bool is_string_like_v =
-    std::is_same_v<remove_cvref_t<T>, std::string> ||
-    std::is_same_v<remove_cvref_t<T>, std::string_view> ||
-    is_c_string_pointer_v<T> || is_char_array_v<T>;
+concept string_like =
+    std::same_as<remove_cvref_t<T>, std::string> ||
+    std::same_as<remove_cvref_t<T>, std::string_view> ||
+    c_string_pointer<T> || char_array<T>;
 
 template <typename T>
-inline constexpr bool is_byte_like_v =
-    std::is_same_v<remove_cvref_t<T>, std::byte> ||
-    std::is_same_v<remove_cvref_t<T>, std::uint8_t> ||
-    std::is_same_v<remove_cvref_t<T>, unsigned char>;
+concept byte_like = std::same_as<remove_cvref_t<T>, std::byte> ||
+                    std::same_as<remove_cvref_t<T>, std::uint8_t> ||
+                    std::same_as<remove_cvref_t<T>, unsigned char>;
 
 template <typename T>
 struct is_optional : std::false_type {};
@@ -186,7 +187,7 @@ template <typename T>
 struct is_optional<std::optional<T>> : std::true_type {};
 
 template <typename T>
-inline constexpr bool is_optional_v = is_optional<remove_cvref_t<T>>::value;
+concept optional_like = is_optional<remove_cvref_t<T>>::value;
 
 template <typename T>
 struct is_time_point : std::false_type {};
@@ -195,143 +196,121 @@ template <typename Clock, typename Duration>
 struct is_time_point<std::chrono::time_point<Clock, Duration>> : std::true_type {};
 
 template <typename T>
-inline constexpr bool is_time_point_v = is_time_point<remove_cvref_t<T>>::value;
+concept time_point_like = is_time_point<remove_cvref_t<T>>::value;
 
 template <typename T>
-struct is_pair : std::false_type {};
-
-template <typename A, typename B>
-struct is_pair<std::pair<A, B>> : std::true_type {};
+concept tuple_like = requires { typename std::tuple_size<remove_cvref_t<T>>::type; };
 
 template <typename T>
-inline constexpr bool is_pair_v = is_pair<remove_cvref_t<T>>::value;
+concept binary_like =
+    std::ranges::contiguous_range<remove_cvref_t<T>> &&
+    std::ranges::sized_range<remove_cvref_t<T>> &&
+    byte_like<std::ranges::range_value_t<remove_cvref_t<T>>> &&
+    !string_like<T>;
 
 template <typename T>
-struct is_tuple : std::false_type {};
-
-template <typename... Ts>
-struct is_tuple<std::tuple<Ts...>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_tuple_v = is_tuple<remove_cvref_t<T>>::value;
-
-template <typename T>
-struct is_std_array : std::false_type {};
-
-template <typename T, std::size_t N>
-struct is_std_array<std::array<T, N>> : std::true_type {};
+concept binary_resizable_like =
+    binary_like<T> && std::default_initializable<remove_cvref_t<T>> &&
+    requires(remove_cvref_t<T>& value, std::size_t size,
+             std::ranges::range_value_t<remove_cvref_t<T>> byte) {
+      value.reserve(size);
+      value.push_back(byte);
+    };
 
 template <typename T>
-inline constexpr bool is_std_array_v = is_std_array<remove_cvref_t<T>>::value;
+concept binary_tuple_like = binary_like<T> && tuple_like<T>;
 
 template <typename T>
-struct is_vector : std::false_type {};
-
-template <typename T, typename Alloc>
-struct is_vector<std::vector<T, Alloc>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_vector_v = is_vector<remove_cvref_t<T>>::value;
-
-template <typename T>
-struct is_list : std::false_type {};
-
-template <typename T, typename Alloc>
-struct is_list<std::list<T, Alloc>> : std::true_type {};
+concept map_like =
+    std::default_initializable<remove_cvref_t<T>> &&
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::key_type key,
+             typename remove_cvref_t<T>::mapped_type mapped) {
+      typename remove_cvref_t<T>::key_type;
+      typename remove_cvref_t<T>::mapped_type;
+      container.emplace(std::move(key), std::move(mapped));
+    };
 
 template <typename T>
-inline constexpr bool is_list_v = is_list<remove_cvref_t<T>>::value;
+concept set_like =
+    std::default_initializable<remove_cvref_t<T>> &&
+    !map_like<T> &&
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::value_type value) {
+      typename remove_cvref_t<T>::key_type;
+      requires std::same_as<typename remove_cvref_t<T>::key_type,
+                            typename remove_cvref_t<T>::value_type>;
+      container.insert(std::move(value));
+    };
 
 template <typename T>
-struct is_deque : std::false_type {};
-
-template <typename T, typename Alloc>
-struct is_deque<std::deque<T, Alloc>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_deque_v = is_deque<remove_cvref_t<T>>::value;
-
-template <typename T>
-struct is_forward_list : std::false_type {};
-
-template <typename T, typename Alloc>
-struct is_forward_list<std::forward_list<T, Alloc>> : std::true_type {};
-
-template <typename T>
-inline constexpr bool is_forward_list_v =
-    is_forward_list<remove_cvref_t<T>>::value;
-
-template <typename T>
-struct is_set : std::false_type {};
-
-template <typename Key, typename Compare, typename Alloc>
-struct is_set<std::set<Key, Compare, Alloc>> : std::true_type {};
-
-template <typename Key, typename Hash, typename Eq, typename Alloc>
-struct is_set<std::unordered_set<Key, Hash, Eq, Alloc>> : std::true_type {};
+concept sequence_like =
+    std::ranges::input_range<remove_cvref_t<T>> &&
+    std::default_initializable<remove_cvref_t<T>> &&
+    (requires(remove_cvref_t<T>& container,
+              typename remove_cvref_t<T>::value_type value) {
+       typename remove_cvref_t<T>::value_type;
+       container.push_back(std::move(value));
+     } ||
+     requires(remove_cvref_t<T>& container,
+              typename remove_cvref_t<T>::value_type value) {
+       typename remove_cvref_t<T>::value_type;
+       container.emplace_back(std::move(value));
+     } ||
+     requires(remove_cvref_t<T>& container,
+              typename remove_cvref_t<T>::value_type value) {
+       typename remove_cvref_t<T>::value_type;
+       container.before_begin();
+       container.insert_after(container.before_begin(), std::move(value));
+     }) &&
+    !string_like<T> && !binary_like<T> && !tuple_like<T> && !set_like<T> &&
+    !map_like<T>;
 
 template <typename T>
-inline constexpr bool is_set_v = is_set<remove_cvref_t<T>>::value;
+concept forward_list_like =
+    sequence_like<T> &&
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::value_type value) {
+      container.before_begin();
+      container.insert_after(container.before_begin(), std::move(value));
+    };
 
 template <typename T>
-struct is_map : std::false_type {};
-
-template <typename Key, typename Value, typename Compare, typename Alloc>
-struct is_map<std::map<Key, Value, Compare, Alloc>> : std::true_type {};
-
-template <typename Key, typename Value, typename Hash, typename Eq,
-          typename Alloc>
-struct is_map<std::unordered_map<Key, Value, Hash, Eq, Alloc>>
-    : std::true_type {};
+concept reserveable_container =
+    requires(remove_cvref_t<T>& container, std::size_t size) {
+      container.reserve(size);
+    };
 
 template <typename T>
-inline constexpr bool is_map_v = is_map<remove_cvref_t<T>>::value;
+concept push_back_container =
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::value_type value) {
+      container.push_back(std::move(value));
+    };
 
 template <typename T>
-struct is_binary_vector : std::false_type {};
+concept emplace_back_container =
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::value_type value) {
+      container.emplace_back(std::move(value));
+    };
 
 template <typename T>
-struct is_binary_vector<std::vector<T, std::allocator<T>>>
-    : std::bool_constant<is_byte_like_v<T>> {};
-
-template <typename T, typename Alloc>
-struct is_binary_vector<std::vector<T, Alloc>>
-    : std::bool_constant<is_byte_like_v<T>> {};
-
-template <typename T>
-inline constexpr bool is_binary_vector_v =
-    is_binary_vector<remove_cvref_t<T>>::value;
-
-template <typename T>
-struct is_binary_array : std::false_type {};
-
-template <typename T, std::size_t N>
-struct is_binary_array<std::array<T, N>>
-    : std::bool_constant<is_byte_like_v<T>> {};
-
-template <typename T>
-inline constexpr bool is_binary_array_v =
-    is_binary_array<remove_cvref_t<T>>::value;
-
-template <typename T>
-inline constexpr bool is_binary_like_v =
-    is_binary_vector_v<T> || is_binary_array_v<T> ||
-    std::is_same_v<remove_cvref_t<T>, std::span<const std::byte>> ||
-    std::is_same_v<remove_cvref_t<T>, std::span<const std::uint8_t>> ||
-    std::is_same_v<remove_cvref_t<T>, std::span<const unsigned char>>;
-
-template <typename T>
-inline constexpr bool is_sequence_v =
-    is_vector_v<T> || is_list_v<T> || is_deque_v<T> || is_forward_list_v<T>;
+concept insert_or_assign_map =
+    map_like<T> &&
+    requires(remove_cvref_t<T>& container,
+             typename remove_cvref_t<T>::key_type key,
+             typename remove_cvref_t<T>::mapped_type mapped) {
+      container.insert_or_assign(std::move(key), std::move(mapped));
+    };
 
 #ifndef MSGPACK_DISABLE_REFLECT
 template <typename T>
-inline constexpr bool is_reflect_record_v =
-    reflect::is_record_like_type_v<remove_cvref_t<T>> && !is_pair_v<T> &&
-    !is_tuple_v<T> && !is_std_array_v<T>;
+concept reflect_record =
+    reflect::is_record_like_type_v<remove_cvref_t<T>> && !tuple_like<T>;
 #else
 template <typename T>
-inline constexpr bool is_reflect_record_v = false;
+concept reflect_record = false;
 #endif
 
 inline auto to_string_view(std::string_view value) -> std::string_view {
@@ -351,28 +330,10 @@ inline auto to_string_view(const char (&value)[N]) -> std::string_view {
   return std::string_view{value, N - 1};
 }
 
-template <typename T>
-auto to_byte_span(const std::vector<T>& value) -> std::span<const std::byte>
-  requires(is_byte_like_v<T>)
-{
-  return std::as_bytes(std::span{value});
-}
-
-template <typename T, std::size_t N>
-auto to_byte_span(const std::array<T, N>& value) -> std::span<const std::byte>
-  requires(is_byte_like_v<T>)
-{
-  return std::as_bytes(std::span{value});
-}
-
-inline auto to_byte_span(std::span<const std::byte> value)
-    -> std::span<const std::byte> {
-  return value;
-}
-
-inline auto to_byte_span(std::span<const std::uint8_t> value)
-    -> std::span<const std::byte> {
-  return std::as_bytes(value);
+template <binary_like T>
+auto to_byte_span(const T& value) -> std::span<const std::byte> {
+  return std::as_bytes(
+      std::span{std::ranges::data(value), std::ranges::size(value)});
 }
 
 template <typename To, typename From>
@@ -426,6 +387,26 @@ auto checked_integer_cast(From value) -> std::expected<To, std::error_code>
 
 [[nodiscard]] constexpr auto is_fixmap(std::uint8_t code) -> bool {
   return (code & 0xf0u) == 0x80u;
+}
+
+[[nodiscard]] constexpr auto marker_byte(marker value) -> std::uint8_t {
+  return std::to_underlying(value);
+}
+
+enum class sized_family {
+  string,
+  binary,
+  array,
+  map,
+};
+
+template <std::ranges::input_range Range>
+[[nodiscard]] auto packed_range_size(const Range& value) -> std::size_t {
+  if constexpr (std::ranges::sized_range<Range>) {
+    return static_cast<std::size_t>(std::ranges::size(value));
+  } else {
+    return static_cast<std::size_t>(std::ranges::distance(value));
+  }
 }
 
 class encoder;
@@ -551,7 +532,7 @@ auto unpack_timestamp(decoder& in) -> std::expected<TimePoint, std::error_code>;
 template <typename T>
 auto append_sequence(T& container, typename T::value_type value)
     -> std::expected<void, std::error_code> {
-  if constexpr (is_forward_list_v<T>) {
+  if constexpr (forward_list_like<T>) {
     return guard([&] {
       auto before = container.before_begin();
       for (auto it = container.begin(); it != container.end(); ++it) {
@@ -559,9 +540,9 @@ auto append_sequence(T& container, typename T::value_type value)
       }
       container.insert_after(before, std::move(value));
     });
-  } else if constexpr (requires { container.push_back(std::move(value)); }) {
+  } else if constexpr (push_back_container<T>) {
     return guard([&] { container.push_back(std::move(value)); });
-  } else if constexpr (requires { container.emplace_back(std::move(value)); }) {
+  } else if constexpr (emplace_back_container<T>) {
     return guard([&] { container.emplace_back(std::move(value)); });
   } else {
     static_assert(dependent_false_v<T>, "Unsupported sequence container");
@@ -578,9 +559,7 @@ template <typename T>
 auto insert_map(T& container, typename T::key_type key,
                 typename T::mapped_type value)
     -> std::expected<void, std::error_code> {
-  if constexpr (requires {
-                  container.insert_or_assign(std::move(key), std::move(value));
-                }) {
+  if constexpr (insert_or_assign_map<T>) {
     return guard(
         [&] { container.insert_or_assign(std::move(key), std::move(value)); });
   } else {
@@ -637,7 +616,7 @@ class encoder {
 
   auto write_string(std::string_view value)
       -> std::expected<void, std::error_code> {
-    auto status = write_string_header(value.size());
+    auto status = write_sized_header(sized_family::string, value.size());
     if (!status) {
       return status;
     }
@@ -646,7 +625,7 @@ class encoder {
 
   auto write_binary(std::span<const std::byte> value)
       -> std::expected<void, std::error_code> {
-    auto status = write_binary_header(value.size());
+    auto status = write_sized_header(sized_family::binary, value.size());
     if (!status) {
       return status;
     }
@@ -655,105 +634,16 @@ class encoder {
 
   auto write_array_header(std::size_t size)
       -> std::expected<void, std::error_code> {
-    if (size <= 0x0f) {
-      return push_byte(std::byte{static_cast<std::uint8_t>(0x90u | size)});
-    }
-    if (size <= std::numeric_limits<std::uint16_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::array16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint16_t>(size));
-    }
-    if (size <= std::numeric_limits<std::uint32_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::array32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint32_t>(size));
-    }
-    return unexpected(errc::length_overflow);
+    return write_sized_header(sized_family::array, size);
   }
 
   auto write_map_header(std::size_t size)
       -> std::expected<void, std::error_code> {
-    if (size <= 0x0f) {
-      return push_byte(std::byte{static_cast<std::uint8_t>(0x80u | size)});
-    }
-    if (size <= std::numeric_limits<std::uint16_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::map16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint16_t>(size));
-    }
-    if (size <= std::numeric_limits<std::uint32_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::map32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint32_t>(size));
-    }
-    return unexpected(errc::length_overflow);
+    return write_sized_header(sized_family::map, size);
   }
 
   auto write_ext(const ext& value) -> std::expected<void, std::error_code> {
-    const auto size = value.data.size();
-    std::expected<void, std::error_code> status{};
-
-    switch (size) {
-      case 1:
-        status =
-            push_byte(std::byte{static_cast<std::uint8_t>(marker::fixext1)});
-        break;
-      case 2:
-        status =
-            push_byte(std::byte{static_cast<std::uint8_t>(marker::fixext2)});
-        break;
-      case 4:
-        status =
-            push_byte(std::byte{static_cast<std::uint8_t>(marker::fixext4)});
-        break;
-      case 8:
-        status =
-            push_byte(std::byte{static_cast<std::uint8_t>(marker::fixext8)});
-        break;
-      case 16:
-        status =
-            push_byte(std::byte{static_cast<std::uint8_t>(marker::fixext16)});
-        break;
-      default:
-        if (size <= std::numeric_limits<std::uint8_t>::max()) {
-          status =
-              push_byte(std::byte{static_cast<std::uint8_t>(marker::ext8)});
-          if (!status) {
-            return status;
-          }
-          status = push_be(static_cast<std::uint8_t>(size));
-        } else if (size <= std::numeric_limits<std::uint16_t>::max()) {
-          status =
-              push_byte(std::byte{static_cast<std::uint8_t>(marker::ext16)});
-          if (!status) {
-            return status;
-          }
-          status = push_be(static_cast<std::uint16_t>(size));
-        } else if (size <= std::numeric_limits<std::uint32_t>::max()) {
-          status =
-              push_byte(std::byte{static_cast<std::uint8_t>(marker::ext32)});
-          if (!status) {
-            return status;
-          }
-          status = push_be(static_cast<std::uint32_t>(size));
-        } else {
-          return unexpected(errc::length_overflow);
-        }
-        break;
-    }
-
+    auto status = write_ext_header(value.data.size());
     if (!status) {
       return status;
     }
@@ -775,6 +665,16 @@ class encoder {
         [&] { bytes_.insert(bytes_.end(), value.begin(), value.end()); });
   }
 
+  template <std::integral Integer>
+  auto write_tagged(marker type, Integer value)
+      -> std::expected<void, std::error_code> {
+    auto status = push_byte(std::byte{marker_byte(type)});
+    if (!status) {
+      return status;
+    }
+    return push_be(value);
+  }
+
   template <typename Integer>
   auto push_be(Integer value) -> std::expected<void, std::error_code>
     requires(std::is_integral_v<Integer>)
@@ -790,65 +690,66 @@ class encoder {
     });
   }
 
-  auto write_string_header(std::size_t size)
+  auto write_length_header(std::optional<marker> marker8, marker marker16,
+                           marker marker32,
+                           std::size_t size)
       -> std::expected<void, std::error_code> {
-    if (size <= 31) {
-      return push_byte(std::byte{static_cast<std::uint8_t>(0xa0u | size)});
-    }
-    if (size <= std::numeric_limits<std::uint8_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::str8)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint8_t>(size));
+    if (marker8 && size <= std::numeric_limits<std::uint8_t>::max()) {
+      return write_tagged(*marker8, static_cast<std::uint8_t>(size));
     }
     if (size <= std::numeric_limits<std::uint16_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::str16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint16_t>(size));
+      return write_tagged(marker16, static_cast<std::uint16_t>(size));
     }
     if (size <= std::numeric_limits<std::uint32_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::str32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint32_t>(size));
+      return write_tagged(marker32, static_cast<std::uint32_t>(size));
     }
     return unexpected(errc::length_overflow);
   }
 
-  auto write_binary_header(std::size_t size)
+  auto write_sized_header(sized_family family, std::size_t size)
       -> std::expected<void, std::error_code> {
-    if (size <= std::numeric_limits<std::uint8_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::bin8)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint8_t>(size));
+    switch (family) {
+      case sized_family::string:
+        if (size <= 31) {
+          return push_byte(std::byte{static_cast<std::uint8_t>(0xa0u | size)});
+        }
+        return write_length_header(marker::str8, marker::str16,
+                                   marker::str32, size);
+      case sized_family::binary:
+        return write_length_header(marker::bin8, marker::bin16, marker::bin32,
+                                   size);
+      case sized_family::array:
+        if (size <= 0x0f) {
+          return push_byte(std::byte{static_cast<std::uint8_t>(0x90u | size)});
+        }
+        return write_length_header(std::nullopt, marker::array16,
+                                   marker::array32, size);
+      case sized_family::map:
+        if (size <= 0x0f) {
+          return push_byte(std::byte{static_cast<std::uint8_t>(0x80u | size)});
+        }
+        return write_length_header(std::nullopt, marker::map16, marker::map32,
+                                   size);
     }
-    if (size <= std::numeric_limits<std::uint16_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::bin16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint16_t>(size));
+    return unexpected(errc::invalid_marker);
+  }
+
+  auto write_ext_header(std::size_t size) -> std::expected<void, std::error_code> {
+    switch (size) {
+      case 1:
+        return push_byte(std::byte{marker_byte(marker::fixext1)});
+      case 2:
+        return push_byte(std::byte{marker_byte(marker::fixext2)});
+      case 4:
+        return push_byte(std::byte{marker_byte(marker::fixext4)});
+      case 8:
+        return push_byte(std::byte{marker_byte(marker::fixext8)});
+      case 16:
+        return push_byte(std::byte{marker_byte(marker::fixext16)});
+      default:
+        return write_length_header(marker::ext8, marker::ext16, marker::ext32,
+                                   size);
     }
-    if (size <= std::numeric_limits<std::uint32_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::bin32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint32_t>(size));
-    }
-    return unexpected(errc::length_overflow);
   }
 
   auto write_unsigned(std::uint64_t value)
@@ -857,35 +758,15 @@ class encoder {
       return push_byte(std::byte{static_cast<std::uint8_t>(value)});
     }
     if (value <= std::numeric_limits<std::uint8_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::uint8)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint8_t>(value));
+      return write_tagged(marker::uint8, static_cast<std::uint8_t>(value));
     }
     if (value <= std::numeric_limits<std::uint16_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::uint16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint16_t>(value));
+      return write_tagged(marker::uint16, static_cast<std::uint16_t>(value));
     }
     if (value <= std::numeric_limits<std::uint32_t>::max()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::uint32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::uint32_t>(value));
+      return write_tagged(marker::uint32, static_cast<std::uint32_t>(value));
     }
-    auto status =
-        push_byte(std::byte{static_cast<std::uint8_t>(marker::uint64)});
-    if (!status) {
-      return status;
-    }
-    return push_be(value);
+    return write_tagged(marker::uint64, value);
   }
 
   auto write_signed(std::int64_t value)
@@ -897,35 +778,15 @@ class encoder {
       return push_byte(std::byte{static_cast<std::uint8_t>(value)});
     }
     if (value >= std::numeric_limits<std::int8_t>::min()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::int8)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::int8_t>(value));
+      return write_tagged(marker::int8, static_cast<std::int8_t>(value));
     }
     if (value >= std::numeric_limits<std::int16_t>::min()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::int16)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::int16_t>(value));
+      return write_tagged(marker::int16, static_cast<std::int16_t>(value));
     }
     if (value >= std::numeric_limits<std::int32_t>::min()) {
-      auto status =
-          push_byte(std::byte{static_cast<std::uint8_t>(marker::int32)});
-      if (!status) {
-        return status;
-      }
-      return push_be(static_cast<std::int32_t>(value));
+      return write_tagged(marker::int32, static_cast<std::int32_t>(value));
     }
-    auto status =
-        push_byte(std::byte{static_cast<std::uint8_t>(marker::int64)});
-    if (!status) {
-      return status;
-    }
-    return push_be(value);
+    return write_tagged(marker::int64, value);
   }
 
   std::vector<std::byte> bytes_{};
@@ -1037,12 +898,22 @@ class decoder {
  private:
   auto read_byte() -> std::expected<std::byte, std::error_code>;
   auto advance(std::size_t count) -> std::expected<void, std::error_code>;
-  auto read_string_size() -> std::expected<std::size_t, std::error_code>;
-  auto read_binary_size() -> std::expected<std::size_t, std::error_code>;
+  auto read_sized_header(sized_family family)
+      -> std::expected<std::size_t, std::error_code>;
+  auto read_sized_payload(sized_family family, std::uint8_t code)
+      -> std::expected<std::size_t, std::error_code>;
+  auto read_ext_size(std::uint8_t code)
+      -> std::expected<std::size_t, std::error_code>;
   auto skip_array_payload(std::size_t size)
       -> std::expected<void, std::error_code>;
   auto skip_map_payload(std::size_t size)
       -> std::expected<void, std::error_code>;
+
+  template <typename Integer, typename Encoded>
+  auto read_integer_payload() -> std::expected<Integer, std::error_code>;
+
+  template <typename Integer, typename Signed, typename Unsigned>
+  auto read_signed_integer_payload() -> std::expected<Integer, std::error_code>;
 
   template <typename Integer>
   auto read_be() -> std::expected<Integer, std::error_code>
@@ -1180,6 +1051,26 @@ inline auto decoder::read_signed_be() -> std::expected<Signed, std::error_code>
   return std::bit_cast<Signed>(*raw);
 }
 
+template <typename Integer, typename Encoded>
+inline auto decoder::read_integer_payload()
+    -> std::expected<Integer, std::error_code> {
+  auto decoded = read_be<Encoded>();
+  if (!decoded) {
+    return std::unexpected(decoded.error());
+  }
+  return checked_integer_cast<Integer>(*decoded);
+}
+
+template <typename Integer, typename Signed, typename Unsigned>
+inline auto decoder::read_signed_integer_payload()
+    -> std::expected<Integer, std::error_code> {
+  auto decoded = read_signed_be<Signed, Unsigned>();
+  if (!decoded) {
+    return std::unexpected(decoded.error());
+  }
+  return checked_integer_cast<Integer>(*decoded);
+}
+
 inline auto decoder::read_nil() -> std::expected<void, std::error_code> {
   auto value = read_byte();
   if (!value) {
@@ -1224,62 +1115,25 @@ inline auto decoder::read_integer() -> std::expected<Integer, std::error_code>
   }
 
   switch (static_cast<marker>(code)) {
-    case marker::uint8: {
-      auto decoded = read_be<std::uint8_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::uint16: {
-      auto decoded = read_be<std::uint16_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::uint32: {
-      auto decoded = read_be<std::uint32_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::uint64: {
-      auto decoded = read_be<std::uint64_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::int8: {
-      auto decoded = read_signed_be<std::int8_t, std::uint8_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::int16: {
-      auto decoded = read_signed_be<std::int16_t, std::uint16_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::int32: {
-      auto decoded = read_signed_be<std::int32_t, std::uint32_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
-    case marker::int64: {
-      auto decoded = read_signed_be<std::int64_t, std::uint64_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      return checked_integer_cast<Integer>(*decoded);
-    }
+    case marker::uint8:
+      return read_integer_payload<Integer, std::uint8_t>();
+    case marker::uint16:
+      return read_integer_payload<Integer, std::uint16_t>();
+    case marker::uint32:
+      return read_integer_payload<Integer, std::uint32_t>();
+    case marker::uint64:
+      return read_integer_payload<Integer, std::uint64_t>();
+    case marker::int8:
+      return read_signed_integer_payload<Integer, std::int8_t, std::uint8_t>();
+    case marker::int16:
+      return read_signed_integer_payload<Integer, std::int16_t,
+                                         std::uint16_t>();
+    case marker::int32:
+      return read_signed_integer_payload<Integer, std::int32_t,
+                                         std::uint32_t>();
+    case marker::int64:
+      return read_signed_integer_payload<Integer, std::int64_t,
+                                         std::uint64_t>();
     default:
       return unexpected(errc::type_mismatch);
   }
@@ -1354,43 +1208,112 @@ inline auto decoder::read_floating() -> std::expected<Float, std::error_code>
   return unexpected(errc::type_mismatch);
 }
 
-inline auto decoder::read_string_size()
+inline auto decoder::read_sized_header(sized_family family)
     -> std::expected<std::size_t, std::error_code> {
   auto value = read_byte();
   if (!value) {
     return std::unexpected(value.error());
   }
-  const auto code = std::to_integer<std::uint8_t>(*value);
-  if (is_fixstr(code)) {
-    return static_cast<std::size_t>(code & 0x1fu);
-  }
-  if (code == static_cast<std::uint8_t>(marker::str8)) {
-    auto size = read_be<std::uint8_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::str16)) {
-    auto size = read_be<std::uint16_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::str32)) {
-    auto size = read_be<std::uint32_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
+  return read_sized_payload(family, std::to_integer<std::uint8_t>(*value));
+}
+
+inline auto decoder::read_sized_payload(sized_family family, std::uint8_t code)
+    -> std::expected<std::size_t, std::error_code> {
+  switch (family) {
+    case sized_family::string:
+      if (is_fixstr(code)) {
+        return static_cast<std::size_t>(code & 0x1fu);
+      }
+      if (code == marker_byte(marker::str8)) {
+        auto size = read_be<std::uint8_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::str16)) {
+        auto size = read_be<std::uint16_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::str32)) {
+        auto size = read_be<std::uint32_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      break;
+    case sized_family::binary:
+      if (code == marker_byte(marker::bin8)) {
+        auto size = read_be<std::uint8_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::bin16)) {
+        auto size = read_be<std::uint16_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::bin32)) {
+        auto size = read_be<std::uint32_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      break;
+    case sized_family::array:
+      if (is_fixarray(code)) {
+        return static_cast<std::size_t>(code & 0x0fu);
+      }
+      if (code == marker_byte(marker::array16)) {
+        auto size = read_be<std::uint16_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::array32)) {
+        auto size = read_be<std::uint32_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      break;
+    case sized_family::map:
+      if (is_fixmap(code)) {
+        return static_cast<std::size_t>(code & 0x0fu);
+      }
+      if (code == marker_byte(marker::map16)) {
+        auto size = read_be<std::uint16_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      if (code == marker_byte(marker::map32)) {
+        auto size = read_be<std::uint32_t>();
+        if (!size) {
+          return std::unexpected(size.error());
+        }
+        return static_cast<std::size_t>(*size);
+      }
+      break;
   }
   return unexpected(errc::type_mismatch);
 }
 
 inline auto decoder::read_string_view()
     -> std::expected<std::string_view, std::error_code> {
-  auto size = read_string_size();
+  auto size = read_sized_header(sized_family::string);
   if (!size) {
     return std::unexpected(size.error());
   }
@@ -1413,40 +1336,9 @@ inline auto decoder::read_string()
   return guard_value<std::string>([&] { return std::string{*view}; });
 }
 
-inline auto decoder::read_binary_size()
-    -> std::expected<std::size_t, std::error_code> {
-  auto value = read_byte();
-  if (!value) {
-    return std::unexpected(value.error());
-  }
-  const auto code = std::to_integer<std::uint8_t>(*value);
-  if (code == static_cast<std::uint8_t>(marker::bin8)) {
-    auto size = read_be<std::uint8_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::bin16)) {
-    auto size = read_be<std::uint16_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::bin32)) {
-    auto size = read_be<std::uint32_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  return unexpected(errc::type_mismatch);
-}
-
 inline auto decoder::read_binary_view()
     -> std::expected<std::span<const std::byte>, std::error_code> {
-  auto size = read_binary_size();
+  auto size = read_sized_header(sized_family::binary);
   if (!size) {
     return std::unexpected(size.error());
   }
@@ -1470,56 +1362,51 @@ inline auto decoder::read_binary()
 
 inline auto decoder::read_array_header()
     -> std::expected<std::size_t, std::error_code> {
-  auto value = read_byte();
-  if (!value) {
-    return std::unexpected(value.error());
-  }
-  const auto code = std::to_integer<std::uint8_t>(*value);
-  if (is_fixarray(code)) {
-    return static_cast<std::size_t>(code & 0x0fu);
-  }
-  if (code == static_cast<std::uint8_t>(marker::array16)) {
-    auto size = read_be<std::uint16_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::array32)) {
-    auto size = read_be<std::uint32_t>();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    return static_cast<std::size_t>(*size);
-  }
-  return unexpected(errc::type_mismatch);
+  return read_sized_header(sized_family::array);
 }
 
 inline auto decoder::read_map_header()
     -> std::expected<std::size_t, std::error_code> {
-  auto value = read_byte();
-  if (!value) {
-    return std::unexpected(value.error());
-  }
-  const auto code = std::to_integer<std::uint8_t>(*value);
-  if (is_fixmap(code)) {
-    return static_cast<std::size_t>(code & 0x0fu);
-  }
-  if (code == static_cast<std::uint8_t>(marker::map16)) {
-    auto size = read_be<std::uint16_t>();
-    if (!size) {
-      return std::unexpected(size.error());
+  return read_sized_header(sized_family::map);
+}
+
+inline auto decoder::read_ext_size(std::uint8_t code)
+    -> std::expected<std::size_t, std::error_code> {
+  switch (static_cast<marker>(code)) {
+    case marker::fixext1:
+      return 1;
+    case marker::fixext2:
+      return 2;
+    case marker::fixext4:
+      return 4;
+    case marker::fixext8:
+      return 8;
+    case marker::fixext16:
+      return 16;
+    case marker::ext8: {
+      auto decoded = read_be<std::uint8_t>();
+      if (!decoded) {
+        return std::unexpected(decoded.error());
+      }
+      return static_cast<std::size_t>(*decoded);
     }
-    return static_cast<std::size_t>(*size);
-  }
-  if (code == static_cast<std::uint8_t>(marker::map32)) {
-    auto size = read_be<std::uint32_t>();
-    if (!size) {
-      return std::unexpected(size.error());
+    case marker::ext16: {
+      auto decoded = read_be<std::uint16_t>();
+      if (!decoded) {
+        return std::unexpected(decoded.error());
+      }
+      return static_cast<std::size_t>(*decoded);
     }
-    return static_cast<std::size_t>(*size);
+    case marker::ext32: {
+      auto decoded = read_be<std::uint32_t>();
+      if (!decoded) {
+        return std::unexpected(decoded.error());
+      }
+      return static_cast<std::size_t>(*decoded);
+    }
+    default:
+      return unexpected(errc::type_mismatch);
   }
-  return unexpected(errc::type_mismatch);
 }
 
 inline auto decoder::read_ext() -> std::expected<ext, std::error_code> {
@@ -1527,51 +1414,10 @@ inline auto decoder::read_ext() -> std::expected<ext, std::error_code> {
   if (!value) {
     return std::unexpected(value.error());
   }
-  const auto code = std::to_integer<std::uint8_t>(*value);
-  std::size_t size = 0;
 
-  switch (static_cast<marker>(code)) {
-    case marker::fixext1:
-      size = 1;
-      break;
-    case marker::fixext2:
-      size = 2;
-      break;
-    case marker::fixext4:
-      size = 4;
-      break;
-    case marker::fixext8:
-      size = 8;
-      break;
-    case marker::fixext16:
-      size = 16;
-      break;
-    case marker::ext8: {
-      auto decoded = read_be<std::uint8_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      size = *decoded;
-      break;
-    }
-    case marker::ext16: {
-      auto decoded = read_be<std::uint16_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      size = *decoded;
-      break;
-    }
-    case marker::ext32: {
-      auto decoded = read_be<std::uint32_t>();
-      if (!decoded) {
-        return std::unexpected(decoded.error());
-      }
-      size = *decoded;
-      break;
-    }
-    default:
-      return unexpected(errc::type_mismatch);
+  auto size = read_ext_size(std::to_integer<std::uint8_t>(*value));
+  if (!size) {
+    return std::unexpected(size.error());
   }
 
   auto type = read_signed_be<std::int8_t, std::uint8_t>();
@@ -1579,19 +1425,19 @@ inline auto decoder::read_ext() -> std::expected<ext, std::error_code> {
     return std::unexpected(type.error());
   }
 
-  if (offset_ + size > buffer_.size()) {
+  if (offset_ + *size > buffer_.size()) {
     return unexpected(errc::out_of_range);
   }
 
   auto data = guard_value<std::vector<std::byte>>([&] {
     return std::vector<std::byte>{
         buffer_.begin() + static_cast<std::ptrdiff_t>(offset_),
-        buffer_.begin() + static_cast<std::ptrdiff_t>(offset_ + size)};
+        buffer_.begin() + static_cast<std::ptrdiff_t>(offset_ + *size)};
   });
   if (!data) {
     return std::unexpected(data.error());
   }
-  offset_ += size;
+  offset_ += *size;
   return ext{*type, std::move(*data)};
 }
 
@@ -1645,18 +1491,10 @@ inline auto decoder::skip() -> std::expected<void, std::error_code> {
   }
 
   switch (static_cast<marker>(code)) {
-    case marker::bin8: {
-      auto size = read_be<std::uint8_t>();
-      if (!size) return std::unexpected(size.error());
-      return advance(*size);
-    }
-    case marker::bin16: {
-      auto size = read_be<std::uint16_t>();
-      if (!size) return std::unexpected(size.error());
-      return advance(*size);
-    }
+    case marker::bin8:
+    case marker::bin16:
     case marker::bin32: {
-      auto size = read_be<std::uint32_t>();
+      auto size = read_sized_payload(sized_family::binary, code);
       if (!size) return std::unexpected(size.error());
       return advance(*size);
     }
@@ -1676,84 +1514,34 @@ inline auto decoder::skip() -> std::expected<void, std::error_code> {
     case marker::uint64:
     case marker::int64:
       return advance(8);
-    case marker::fixext1: {
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(1);
-    }
-    case marker::fixext2: {
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(2);
-    }
-    case marker::fixext4: {
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(4);
-    }
-    case marker::fixext8: {
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(8);
-    }
-    case marker::fixext16: {
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(16);
-    }
-    case marker::ext8: {
-      auto size = read_be<std::uint8_t>();
-      if (!size) return std::unexpected(size.error());
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(*size);
-    }
-    case marker::ext16: {
-      auto size = read_be<std::uint16_t>();
-      if (!size) return std::unexpected(size.error());
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(*size);
-    }
+    case marker::fixext1:
+    case marker::fixext2:
+    case marker::fixext4:
+    case marker::fixext8:
+    case marker::fixext16:
+    case marker::ext8:
+    case marker::ext16:
     case marker::ext32: {
-      auto size = read_be<std::uint32_t>();
+      auto size = read_ext_size(code);
       if (!size) return std::unexpected(size.error());
-      auto status = advance(1);
-      if (!status) return status;
-      return advance(*size);
+      return advance(1 + *size);
     }
-    case marker::str8: {
-      auto size = read_be<std::uint8_t>();
-      if (!size) return std::unexpected(size.error());
-      return advance(*size);
-    }
-    case marker::str16: {
-      auto size = read_be<std::uint16_t>();
-      if (!size) return std::unexpected(size.error());
-      return advance(*size);
-    }
+    case marker::str8:
+    case marker::str16:
     case marker::str32: {
-      auto size = read_be<std::uint32_t>();
+      auto size = read_sized_payload(sized_family::string, code);
       if (!size) return std::unexpected(size.error());
       return advance(*size);
     }
-    case marker::array16: {
-      auto size = read_be<std::uint16_t>();
-      if (!size) return std::unexpected(size.error());
-      return skip_array_payload(*size);
-    }
+    case marker::array16:
     case marker::array32: {
-      auto size = read_be<std::uint32_t>();
+      auto size = read_sized_payload(sized_family::array, code);
       if (!size) return std::unexpected(size.error());
       return skip_array_payload(*size);
     }
-    case marker::map16: {
-      auto size = read_be<std::uint16_t>();
-      if (!size) return std::unexpected(size.error());
-      return skip_map_payload(*size);
-    }
+    case marker::map16:
     case marker::map32: {
-      auto size = read_be<std::uint32_t>();
+      auto size = read_sized_payload(sized_family::map, code);
       if (!size) return std::unexpected(size.error());
       return skip_map_payload(*size);
     }
@@ -1830,6 +1618,155 @@ inline auto unpack_aggregate(decoder& in, std::index_sequence<Index...>)
 }
 #endif
 
+template <std::ranges::input_range Range>
+inline auto pack_range_as_array(encoder& out, const Range& value)
+    -> std::expected<void, std::error_code> {
+  auto status = out.write_array_header(packed_range_size(value));
+  if (!status) {
+    return status;
+  }
+  for (const auto& element : value) {
+    status = pack_value(out, element);
+    if (!status) {
+      return status;
+    }
+  }
+  return {};
+}
+
+template <map_like Map>
+inline auto pack_map_entries(encoder& out, const Map& value)
+    -> std::expected<void, std::error_code> {
+  auto status = out.write_map_header(packed_range_size(value));
+  if (!status) {
+    return status;
+  }
+  for (const auto& [key, mapped] : value) {
+    status = pack_value(out, key);
+    if (!status) {
+      return status;
+    }
+    status = pack_value(out, mapped);
+    if (!status) {
+      return status;
+    }
+  }
+  return {};
+}
+
+template <binary_resizable_like T>
+inline auto unpack_binary_resizable(decoder& in)
+    -> std::expected<T, std::error_code> {
+  auto view = in.read_binary_view();
+  if (!view) {
+    return std::unexpected(view.error());
+  }
+  return guard_value<T>([&] {
+    T out;
+    out.reserve(view->size());
+    for (const auto byte : *view) {
+      out.push_back(static_cast<typename T::value_type>(
+          std::to_integer<std::uint8_t>(byte)));
+    }
+    return out;
+  });
+}
+
+template <binary_tuple_like T>
+inline auto unpack_binary_tuple(decoder& in) -> std::expected<T, std::error_code> {
+  auto view = in.read_binary_view();
+  if (!view) {
+    return std::unexpected(view.error());
+  }
+
+  T out{};
+  if (view->size() != std::ranges::size(out)) {
+    return unexpected(errc::type_mismatch);
+  }
+
+  auto it = view->begin();
+  for (auto& element : out) {
+    element = static_cast<typename T::value_type>(
+        std::to_integer<std::uint8_t>(*it++));
+  }
+  return out;
+}
+
+template <sequence_like T>
+inline auto unpack_sequence_container(decoder& in)
+    -> std::expected<T, std::error_code> {
+  auto size = in.read_array_header();
+  if (!size) {
+    return std::unexpected(size.error());
+  }
+
+  T out{};
+  if constexpr (reserveable_container<T>) {
+    auto reserve = guard([&] { out.reserve(*size); });
+    if (!reserve) {
+      return std::unexpected(reserve.error());
+    }
+  }
+
+  for (std::size_t index = 0; index < *size; ++index) {
+    auto value = unpack_value<typename T::value_type>(in);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    auto status = append_sequence(out, std::move(*value));
+    if (!status) {
+      return std::unexpected(status.error());
+    }
+  }
+  return out;
+}
+
+template <set_like T>
+inline auto unpack_set_container(decoder& in) -> std::expected<T, std::error_code> {
+  auto size = in.read_array_header();
+  if (!size) {
+    return std::unexpected(size.error());
+  }
+
+  T out{};
+  for (std::size_t index = 0; index < *size; ++index) {
+    auto value = unpack_value<typename T::value_type>(in);
+    if (!value) {
+      return std::unexpected(value.error());
+    }
+    auto status = insert_set(out, std::move(*value));
+    if (!status) {
+      return std::unexpected(status.error());
+    }
+  }
+  return out;
+}
+
+template <map_like T>
+inline auto unpack_map_container(decoder& in) -> std::expected<T, std::error_code> {
+  auto size = in.read_map_header();
+  if (!size) {
+    return std::unexpected(size.error());
+  }
+
+  T out{};
+  for (std::size_t index = 0; index < *size; ++index) {
+    auto key = unpack_value<typename T::key_type>(in);
+    if (!key) {
+      return std::unexpected(key.error());
+    }
+    auto mapped = unpack_value<typename T::mapped_type>(in);
+    if (!mapped) {
+      return std::unexpected(mapped.error());
+    }
+    auto status = insert_map(out, std::move(*key), std::move(*mapped));
+    if (!status) {
+      return std::unexpected(status.error());
+    }
+  }
+  return out;
+}
+
 template <typename T>
 inline auto pack_value(encoder& out, const T& value)
     -> std::expected<void, std::error_code> {
@@ -1840,97 +1777,36 @@ inline auto pack_value(encoder& out, const T& value)
   } else if constexpr (std::is_same_v<value_type, bool>) {
     return out.write_bool(value);
   } else if constexpr (std::is_enum_v<value_type>) {
-    return out.write_integer(
-        static_cast<std::underlying_type_t<value_type>>(value));
+    return out.write_integer(std::to_underlying(value));
   } else if constexpr (std::is_integral_v<value_type>) {
     return out.write_integer(value);
   } else if constexpr (std::is_same_v<value_type, float>) {
     return out.write_float(value);
   } else if constexpr (std::is_same_v<value_type, double>) {
     return out.write_double(value);
-  } else if constexpr (is_time_point_v<value_type>) {
+  } else if constexpr (time_point_like<value_type>) {
     return pack_timestamp(out, value);
-  } else if constexpr (is_string_like_v<T>) {
+  } else if constexpr (string_like<T>) {
     return out.write_string(to_string_view(value));
-  } else if constexpr (is_binary_like_v<T>) {
+  } else if constexpr (binary_like<T>) {
     return out.write_binary(to_byte_span(value));
   } else if constexpr (std::is_same_v<value_type, ext>) {
     return out.write_ext(value);
-  } else if constexpr (is_optional_v<value_type>) {
+  } else if constexpr (optional_like<value_type>) {
     if (!value.has_value()) {
       return out.write_nil();
     }
     return pack_value(out, *value);
-  } else if constexpr (is_pair_v<value_type>) {
-    auto status = out.write_array_header(2);
-    if (!status) {
-      return status;
-    }
-    status = pack_value(out, value.first);
-    if (!status) {
-      return status;
-    }
-    return pack_value(out, value.second);
-  } else if constexpr (is_tuple_v<value_type>) {
+  } else if constexpr (tuple_like<value_type> && !binary_tuple_like<value_type>) {
     return pack_tuple_like(
         out, value, std::make_index_sequence<std::tuple_size_v<value_type>>{});
-  } else if constexpr (is_std_array_v<value_type> &&
-                       !is_binary_array_v<value_type>) {
-    auto status = out.write_array_header(value.size());
-    if (!status) {
-      return status;
-    }
-    for (const auto& element : value) {
-      status = pack_value(out, element);
-      if (!status) {
-        return status;
-      }
-    }
-    return {};
-  } else if constexpr (is_sequence_v<value_type>) {
-    auto status = out.write_array_header(
-        static_cast<std::size_t>(std::distance(value.begin(), value.end())));
-    if (!status) {
-      return status;
-    }
-    for (const auto& element : value) {
-      status = pack_value(out, element);
-      if (!status) {
-        return status;
-      }
-    }
-    return {};
-  } else if constexpr (is_set_v<value_type>) {
-    auto status = out.write_array_header(value.size());
-    if (!status) {
-      return status;
-    }
-    for (const auto& element : value) {
-      status = pack_value(out, element);
-      if (!status) {
-        return status;
-      }
-    }
-    return {};
-  } else if constexpr (is_map_v<value_type>) {
-    auto status = out.write_map_header(value.size());
-    if (!status) {
-      return status;
-    }
-    for (const auto& [key, mapped] : value) {
-      status = pack_value(out, key);
-      if (!status) {
-        return status;
-      }
-      status = pack_value(out, mapped);
-      if (!status) {
-        return status;
-      }
-    }
-    return {};
+  } else if constexpr (sequence_like<value_type> || set_like<value_type>) {
+    return pack_range_as_array(out, value);
+  } else if constexpr (map_like<value_type>) {
+    return pack_map_entries(out, value);
   }
 #ifndef MSGPACK_DISABLE_REFLECT
-  else if constexpr (is_reflect_record_v<value_type>) {
+  else if constexpr (reflect_record<value_type>) {
     auto status = out.write_array_header(reflect::size<value_type>());
     if (!status) {
       return status;
@@ -1974,43 +1850,19 @@ inline auto unpack_value(decoder& in) -> std::expected<T, std::error_code> {
     return in.read_integer<value_type>();
   } else if constexpr (std::is_floating_point_v<value_type>) {
     return in.read_floating<value_type>();
-  } else if constexpr (is_time_point_v<value_type>) {
+  } else if constexpr (time_point_like<value_type>) {
     return unpack_timestamp<value_type>(in);
   } else if constexpr (std::is_same_v<value_type, std::string>) {
     return in.read_string();
   } else if constexpr (std::is_same_v<value_type, std::string_view>) {
     return in.read_string_view();
-  } else if constexpr (is_binary_vector_v<value_type>) {
-    auto view = in.read_binary_view();
-    if (!view) {
-      return std::unexpected(view.error());
-    }
-    return guard_value<value_type>([&] {
-      value_type out;
-      out.reserve(view->size());
-      for (const auto byte : *view) {
-        out.push_back(static_cast<typename value_type::value_type>(
-            std::to_integer<std::uint8_t>(byte)));
-      }
-      return out;
-    });
-  } else if constexpr (is_binary_array_v<value_type>) {
-    auto view = in.read_binary_view();
-    if (!view) {
-      return std::unexpected(view.error());
-    }
-    value_type out{};
-    if (view->size() != out.size()) {
-      return unexpected(errc::type_mismatch);
-    }
-    for (std::size_t index = 0; index < out.size(); ++index) {
-      out[index] = static_cast<typename value_type::value_type>(
-          std::to_integer<std::uint8_t>((*view)[index]));
-    }
-    return out;
+  } else if constexpr (binary_resizable_like<value_type>) {
+    return unpack_binary_resizable<value_type>(in);
+  } else if constexpr (binary_tuple_like<value_type>) {
+    return unpack_binary_tuple<value_type>(in);
   } else if constexpr (std::is_same_v<value_type, ext>) {
     return in.read_ext();
-  } else if constexpr (is_optional_v<value_type>) {
+  } else if constexpr (optional_like<value_type>) {
     auto marker_value = in.peek();
     if (!marker_value) {
       return std::unexpected(marker_value.error());
@@ -2027,108 +1879,18 @@ inline auto unpack_value(decoder& in) -> std::expected<T, std::error_code> {
       return std::unexpected(inner.error());
     }
     return value_type{std::move(*inner)};
-  } else if constexpr (is_pair_v<value_type>) {
-    auto size = in.read_array_header();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    if (*size != 2) {
-      return unexpected(errc::type_mismatch);
-    }
-    auto first = unpack_value<typename value_type::first_type>(in);
-    if (!first) {
-      return std::unexpected(first.error());
-    }
-    auto second = unpack_value<typename value_type::second_type>(in);
-    if (!second) {
-      return std::unexpected(second.error());
-    }
-    return value_type{std::move(*first), std::move(*second)};
-  } else if constexpr (is_tuple_v<value_type>) {
+  } else if constexpr (tuple_like<value_type> && !binary_tuple_like<value_type>) {
     return unpack_tuple_like<value_type>(
         in, std::make_index_sequence<std::tuple_size_v<value_type>>{});
-  } else if constexpr (is_std_array_v<value_type> &&
-                       !is_binary_array_v<value_type>) {
-    auto size = in.read_array_header();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    if (*size != value_type{}.size()) {
-      return unexpected(errc::type_mismatch);
-    }
-    value_type out{};
-    for (auto& element : out) {
-      auto value = unpack_value<typename value_type::value_type>(in);
-      if (!value) {
-        return std::unexpected(value.error());
-      }
-      element = std::move(*value);
-    }
-    return out;
-  } else if constexpr (is_sequence_v<value_type>) {
-    auto size = in.read_array_header();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    value_type out{};
-    if constexpr (requires { out.reserve(*size); }) {
-      auto reserve = guard([&] { out.reserve(*size); });
-      if (!reserve) {
-        return std::unexpected(reserve.error());
-      }
-    }
-    for (std::size_t index = 0; index < *size; ++index) {
-      auto value = unpack_value<typename value_type::value_type>(in);
-      if (!value) {
-        return std::unexpected(value.error());
-      }
-      auto status = append_sequence(out, std::move(*value));
-      if (!status) {
-        return std::unexpected(status.error());
-      }
-    }
-    return out;
-  } else if constexpr (is_set_v<value_type>) {
-    auto size = in.read_array_header();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    value_type out{};
-    for (std::size_t index = 0; index < *size; ++index) {
-      auto value = unpack_value<typename value_type::value_type>(in);
-      if (!value) {
-        return std::unexpected(value.error());
-      }
-      auto status = insert_set(out, std::move(*value));
-      if (!status) {
-        return std::unexpected(status.error());
-      }
-    }
-    return out;
-  } else if constexpr (is_map_v<value_type>) {
-    auto size = in.read_map_header();
-    if (!size) {
-      return std::unexpected(size.error());
-    }
-    value_type out{};
-    for (std::size_t index = 0; index < *size; ++index) {
-      auto key = unpack_value<typename value_type::key_type>(in);
-      if (!key) {
-        return std::unexpected(key.error());
-      }
-      auto mapped = unpack_value<typename value_type::mapped_type>(in);
-      if (!mapped) {
-        return std::unexpected(mapped.error());
-      }
-      auto status = insert_map(out, std::move(*key), std::move(*mapped));
-      if (!status) {
-        return std::unexpected(status.error());
-      }
-    }
-    return out;
+  } else if constexpr (sequence_like<value_type>) {
+    return unpack_sequence_container<value_type>(in);
+  } else if constexpr (set_like<value_type>) {
+    return unpack_set_container<value_type>(in);
+  } else if constexpr (map_like<value_type>) {
+    return unpack_map_container<value_type>(in);
   }
 #ifndef MSGPACK_DISABLE_REFLECT
-  else if constexpr (is_reflect_record_v<value_type>) {
+  else if constexpr (reflect_record<value_type>) {
     return unpack_aggregate<value_type>(
         in, std::make_index_sequence<reflect::size<value_type>()>{});
   }
