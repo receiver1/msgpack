@@ -13,9 +13,8 @@
 | `bool` | ✅ | ✅ | `bool` |                                                               
 | Positive fixint | ✅ | ✅ | `std::uint8_t` -> `std::uint64_t` |            
 | Negative fixint | ✅ | ✅ | `std::int8_t` -> `std::int64_t` |                               
-| `uint8/16/32/64` | ✅ | ✅ | `std::uint8_t`, `std::uint16_t`, `std::uint32_t`,            
-`std::uint64_t` |                                                                           
-| `int8/16/32/64` | ✅ | ✅ | `std::int8_t`, `std::int16_t`, `std::int32_t`, `std::int64_t` |                                                                                           
+| `uint8/16/32/64` | ✅ | ✅ | `std::uint8_t` -> `std::uint64_t` |                                                                           
+| `int8/16/32/64` | ✅ | ✅ | `std::int8_t` -> `std::int64_t` |                                                                                           
 | `float32` | ✅ | ✅ | `float` |                                                           
 | `float64` | ✅ | ✅ | `double` |                                                          
 | `fixstr` | ✅ | ✅ | `std::string`, `std::string_view`, `const char*` |                   
