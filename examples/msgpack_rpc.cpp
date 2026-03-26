@@ -106,8 +106,8 @@ auto enqueue_notification(scripted_transport& transport,
 }
 
 int main() {
-  auto client_result = msgpack::rpc::client<scripted_transport>::open(
-      scripted_transport{}, "loopback://demo");
+  auto client_result =
+      msgpack::rpc::open(scripted_transport{}, "loopback://demo");
   if (!client_result) {
     printf("rpc transport error: %s\n",
            client_result.error().message().c_str());

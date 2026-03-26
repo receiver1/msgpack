@@ -14,9 +14,9 @@
 #include <system_error>
 #include <tuple>
 #include <type_traits>
+#include <unordered_map>
 #include <utility>
 #include <vector>
-#include <unordered_map>
 
 #include "msgpack.hpp"
 
@@ -108,21 +108,19 @@ inline constexpr std::uint8_t k_response_type = 1;
 inline constexpr std::uint8_t k_notification_type = 2;
 
 template <typename Transport>
-concept transport =
-    requires(Transport& value, const typename Transport::endpoint_type& endpoint,
-             std::span<const std::byte> bytes) {
-      typename Transport::endpoint_type;
-      {
-        value.connect(endpoint)
-      } -> std::same_as<std::expected<void, std::error_code>>;
-      {
-        value.send(bytes)
-      } -> std::same_as<std::expected<void, std::error_code>>;
-      {
-        value.receive()
-      } -> std::same_as<
-          std::expected<std::optional<std::vector<std::byte>>, std::error_code>>;
-    };
+concept transport = requires(Transport& value,
+                             const typename Transport::endpoint_type& endpoint,
+                             std::span<const std::byte> bytes) {
+  typename Transport::endpoint_type;
+  {
+    value.connect(endpoint)
+  } -> std::same_as<std::expected<void, std::error_code>>;
+  { value.send(bytes) } -> std::same_as<std::expected<void, std::error_code>>;
+  {
+    value.receive()
+  } -> std::same_as<
+      std::expected<std::optional<std::vector<std::byte>>, std::error_code>>;
+};
 
 namespace detail {
 
@@ -206,28 +204,27 @@ struct function_traits<Return (Class::*)(Args...) const>
     : function_traits<Return(Args...)> {};
 
 template <typename Callback>
-struct callback_signature : function_traits<decltype(&std::remove_cvref_t<Callback>::operator())> {
-};
+struct callback_signature
+    : function_traits<decltype(&std::remove_cvref_t<Callback>::operator())> {};
 
 template <typename Return, typename... Args>
-struct callback_signature<Return (*)(Args...)> : function_traits<Return(Args...)> {
-};
+struct callback_signature<Return (*)(Args...)>
+    : function_traits<Return(Args...)> {};
 
 template <typename Return, typename... Args>
 struct callback_signature<Return(Args...)> : function_traits<Return(Args...)> {
 };
 
 template <typename Handler>
-struct handler_signature : function_traits<decltype(&std::remove_cvref_t<Handler>::operator())> {
-};
+struct handler_signature
+    : function_traits<decltype(&std::remove_cvref_t<Handler>::operator())> {};
 
 template <typename Return, typename... Args>
-struct handler_signature<Return (*)(Args...)> : function_traits<Return(Args...)> {
-};
+struct handler_signature<Return (*)(Args...)>
+    : function_traits<Return(Args...)> {};
 
 template <typename Return, typename... Args>
-struct handler_signature<Return(Args...)> : function_traits<Return(Args...)> {
-};
+struct handler_signature<Return(Args...)> : function_traits<Return(Args...)> {};
 
 template <typename Tuple>
 struct tuple_tail;
@@ -238,7 +235,8 @@ struct tuple_tail<std::tuple<Head, Tail...>> {
 };
 
 template <typename Callback>
-using callback_args_tuple_t = typename callback_signature<std::remove_cvref_t<Callback>>::args_tuple;
+using callback_args_tuple_t =
+    typename callback_signature<std::remove_cvref_t<Callback>>::args_tuple;
 
 template <typename Callback>
 using callback_result_tuple_t =
@@ -268,7 +266,8 @@ struct is_expected<std::expected<T, E>> : std::true_type {
 };
 
 template <typename T>
-inline constexpr bool is_expected_v = is_expected<std::remove_cvref_t<T>>::value;
+inline constexpr bool is_expected_v =
+    is_expected<std::remove_cvref_t<T>>::value;
 
 struct inbound_message {
   std::uint8_t type{};
@@ -278,7 +277,8 @@ struct inbound_message {
 };
 
 template <typename Callback, typename Tuple, std::size_t... Index>
-inline auto invoke_error_with_defaults(Callback& callback, std::error_code error,
+inline auto invoke_error_with_defaults(Callback& callback,
+                                       std::error_code error,
                                        std::index_sequence<Index...>) -> void {
   std::invoke(callback, error, std::tuple_element_t<Index, Tuple>{}...);
 }
@@ -299,7 +299,8 @@ inline auto invoke_callback_error(Callback& callback, std::error_code error)
     std::invoke(callback, error);
   } else if constexpr (tuple_default_constructible_v<result_tuple>) {
     invoke_error_with_defaults<Callback, result_tuple>(
-        callback, error, std::make_index_sequence<std::tuple_size_v<result_tuple>>{});
+        callback, error,
+        std::make_index_sequence<std::tuple_size_v<result_tuple>>{});
   } else {
     static_assert(std::invocable<Callback&, std::error_code>,
                   "Callback must accept std::error_code or have "
@@ -340,7 +341,8 @@ template <typename Tuple>
   }
 }
 
-[[nodiscard]] inline auto parse_inbound_message(std::span<const std::byte> bytes)
+[[nodiscard]] inline auto parse_inbound_message(
+    std::span<const std::byte> bytes)
     -> std::expected<inbound_message, std::error_code> {
   msgpack::reader in{bytes};
   inbound_message message{};
@@ -457,8 +459,8 @@ template <typename Error>
 [[nodiscard]] inline auto make_error_response_bytes(std::uint32_t msgid,
                                                     Error&& error)
     -> std::expected<std::vector<std::byte>, std::error_code> {
-  return msgpack::pack(std::tuple{k_response_type, msgid,
-                                  std::forward<Error>(error), nullptr});
+  return msgpack::pack(
+      std::tuple{k_response_type, msgid, std::forward<Error>(error), nullptr});
 }
 
 template <typename Handler, typename Tuple, std::size_t... Index>
@@ -482,9 +484,9 @@ inline auto dispatch_notification(Handler& handler,
     invoke_handler(handler, *args,
                    std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
   } else {
-    auto ignored =
-        invoke_handler(handler, *args,
-                       std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
+    auto ignored = invoke_handler(
+        handler, *args,
+        std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
     (void)ignored;
   }
 
@@ -500,16 +502,17 @@ inline auto dispatch_request(std::uint32_t msgid, Handler& handler,
 
   auto args = msgpack::unpack<args_tuple>(params);
   if (!args) {
-    return make_error_response_bytes(msgid, std::string{args.error().message()});
+    return make_error_response_bytes(msgid,
+                                     std::string{args.error().message()});
   }
 
   if constexpr (is_expected_v<return_type>) {
     using expected_type = std::remove_cvref_t<return_type>;
     using value_type = typename is_expected<expected_type>::value_type;
 
-    auto result =
-        invoke_handler(handler, *args,
-                       std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
+    auto result = invoke_handler(
+        handler, *args,
+        std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
     if (!result) {
       return make_error_response_bytes(msgid, result.error());
     }
@@ -524,17 +527,17 @@ inline auto dispatch_request(std::uint32_t msgid, Handler& handler,
                    std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
     return make_success_response_bytes(msgid);
   } else {
-    auto result =
-        invoke_handler(handler, *args,
-                       std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
+    auto result = invoke_handler(
+        handler, *args,
+        std::make_index_sequence<std::tuple_size_v<args_tuple>>{});
     return make_success_response_bytes(msgid, std::move(result));
   }
 }
 
 struct bound_handler {
-  std::move_only_function<std::expected<std::optional<std::vector<std::byte>>,
-                                        std::error_code>(
-      std::optional<std::uint32_t>, std::span<const std::byte>)>
+  std::move_only_function<
+      std::expected<std::optional<std::vector<std::byte>>, std::error_code>(
+          std::optional<std::uint32_t>, std::span<const std::byte>)>
       invoke{};
 };
 
@@ -544,9 +547,9 @@ template <typename Handler>
   auto handler_ptr =
       std::make_shared<std::decay_t<Handler>>(std::forward<Handler>(handler));
   auto bound = std::make_shared<bound_handler>();
-  bound->invoke =
-      [handler = std::move(handler_ptr)](std::optional<std::uint32_t> msgid,
-                                         std::span<const std::byte> params)
+  bound->invoke = [handler = std::move(handler_ptr)](
+                      std::optional<std::uint32_t> msgid,
+                      std::span<const std::byte> params)
       -> std::expected<std::optional<std::vector<std::byte>>, std::error_code> {
     if (msgid) {
       auto response = dispatch_request(*msgid, *handler, params);
@@ -587,7 +590,8 @@ inline auto invoke_response_callback(Callback& callback,
     return;
   }
   if (*type != k_response_type) {
-    invoke_callback_error(callback, make_error_code(errc::invalid_response_type));
+    invoke_callback_error(callback,
+                          make_error_code(errc::invalid_response_type));
     return;
   }
 
@@ -689,8 +693,9 @@ inline auto resolve_pending_error(const std::shared_ptr<pending_state>& state,
   }
 }
 
-inline auto resolve_pending_response(const std::shared_ptr<pending_state>& state,
-                                     std::vector<std::byte> response) -> void {
+inline auto resolve_pending_response(
+    const std::shared_ptr<pending_state>& state,
+    std::vector<std::byte> response) -> void {
   std::move_only_function<void()> callback{};
   {
     std::lock_guard lock{state->mutex};
@@ -708,9 +713,9 @@ inline auto resolve_pending_response(const std::shared_ptr<pending_state>& state
 
 template <typename Callback>
 inline auto attach_then(const std::shared_ptr<pending_state>& state,
-    Callback&& callback) -> void {
-  auto callback_ptr =
-      std::make_shared<std::decay_t<Callback>>(std::forward<Callback>(callback));
+                        Callback&& callback) -> void {
+  auto callback_ptr = std::make_shared<std::decay_t<Callback>>(
+      std::forward<Callback>(callback));
   std::optional<std::error_code> local_error{};
   std::shared_ptr<const std::vector<std::byte>> response{};
 
@@ -786,7 +791,8 @@ class pending_call {
  private:
   friend class basic_client<Transport>;
 
-  pending_call(std::uint32_t msgid, std::shared_ptr<detail::pending_state> state)
+  pending_call(std::uint32_t msgid,
+               std::shared_ptr<detail::pending_state> state)
       : msgid_(msgid), state_(std::move(state)) {}
 
   std::uint32_t msgid_{0};
@@ -829,7 +835,8 @@ class basic_client {
   explicit basic_client(Transport transport)
       : transport_(std::move(transport)) {}
 
-  [[nodiscard]] static auto open(Transport transport, const endpoint_type& endpoint)
+  [[nodiscard]] static auto open(Transport transport,
+                                 const endpoint_type& endpoint)
       -> std::expected<basic_client, std::error_code> {
     auto status = transport.connect(endpoint);
     if (!status) {
@@ -864,8 +871,7 @@ class basic_client {
   }
 
   template <fixed_string Method, typename... Args>
-  auto call(Args&&... args)
-      -> pending_call<Transport> {
+  auto call(Args&&... args) -> pending_call<Transport> {
     return call(std::string_view{Method}, std::forward<Args>(args)...);
   }
 
@@ -884,8 +890,8 @@ class basic_client {
       msgid = *allocated;
     }
 
-    auto bytes = detail::make_request_bytes(msgid, method,
-                                            std::forward<Args>(args)...);
+    auto bytes =
+        detail::make_request_bytes(msgid, method, std::forward<Args>(args)...);
     if (!bytes) {
       detail::resolve_pending_error(state, bytes.error());
       return pending_call<Transport>{msgid, std::move(state)};
@@ -909,8 +915,8 @@ class basic_client {
   template <typename... Args>
   auto notify(std::string_view method, Args&&... args)
       -> std::expected<void, std::error_code> {
-    auto bytes = detail::make_notification_bytes(method,
-                                                 std::forward<Args>(args)...);
+    auto bytes =
+        detail::make_notification_bytes(method, std::forward<Args>(args)...);
     if (!bytes) {
       return std::unexpected(bytes.error());
     }
@@ -1049,6 +1055,14 @@ class basic_client {
 
 template <typename Transport>
 using client = basic_client<Transport>;
+
+template <typename Transport>
+  requires transport<Transport>
+[[nodiscard]] inline auto open(
+    Transport transport, const typename Transport::endpoint_type& endpoint)
+    -> std::expected<client<Transport>, std::error_code> {
+  return client<Transport>::open(std::move(transport), endpoint);
+}
 
 }  // namespace msgpack::rpc
 
