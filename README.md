@@ -38,11 +38,49 @@
 | Timestamp extension (`type = -1`) | ✅ | ✅ | `std::chrono::time_point` |
 | Reserved marker `0xC1` | ❌ | ✅ | Invalid marker error on decode |      
 
-## Additional features
-- [x] MessagePack ships with `reader`/`writer` for streaming  
-- [x] MessagePack RPC designed in event-driven style  
-- [x] Implement your own transport for MessagePack RPC
-- [x] Disable reflection with `MSGPACK_DISABLE_REFLECT`
-
 ## Examples
 Examples can be found in the `examples/` directory.
+
+Short RPC overview:
+```cpp
+// Transport independent
+auto client_result = msgpack::rpc
+  ::open(scripted_transport{}, "loopback://demo");
+// No exceptions
+if (!client_result.has_value()) {
+  return;
+}
+auto client = std::move(*client_result);
+// Event-driven
+client.call<"sum">(5, 10)
+  .then([](std::error_code error, int result) 
+    -> void 
+  {
+    // All errors in one place
+    if (error) {
+      std::println("error: {:s}", error.message());
+      return;
+    }
+
+    std::println("sum: {:d}", result);
+  });
+client.notify<"ping">();
+// Full-duplex
+client.bind<"sum">([](int a, int b) 
+  -> std::expected<int, std::string> 
+{
+  if (a > 100) {
+    // Returrn error with
+    return std::unexpected("a too large");
+  }
+
+  return a + b;
+});
+client.bind<"ping">([]() -> void {
+  std::println("ping notify");
+});
+// Execution flow
+while (1) {
+  client.poll();
+}
+```

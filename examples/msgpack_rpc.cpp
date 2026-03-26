@@ -79,9 +79,9 @@ template <typename... Args>
 auto enqueue_request(scripted_transport& transport, std::uint32_t msgid,
                      std::string_view method, Args&&... args)
     -> std::expected<void, std::error_code> {
-  auto bytes = msgpack::pack(
-      std::tuple{msgpack::rpc::k_request_type, msgid, std::string{method},
-                 std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+  auto bytes = msgpack::pack(std::tuple{
+      msgpack::rpc::k_request_type, msgid, std::string{method},
+      std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
   if (!bytes) {
     return std::unexpected(bytes.error());
   }
@@ -91,12 +91,12 @@ auto enqueue_request(scripted_transport& transport, std::uint32_t msgid,
 }
 
 template <typename... Args>
-auto enqueue_notification(scripted_transport& transport, std::string_view method,
-                          Args&&... args)
+auto enqueue_notification(scripted_transport& transport,
+                          std::string_view method, Args&&... args)
     -> std::expected<void, std::error_code> {
-  auto bytes = msgpack::pack(
-      std::tuple{msgpack::rpc::k_notification_type, std::string{method},
-                 std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
+  auto bytes = msgpack::pack(std::tuple{
+      msgpack::rpc::k_notification_type, std::string{method},
+      std::tuple<std::decay_t<Args>...>{std::forward<Args>(args)...}});
   if (!bytes) {
     return std::unexpected(bytes.error());
   }
@@ -124,7 +124,7 @@ int main() {
   int tick_value = 0;
 
   client.bind<"mul">([](int a, int b) -> int { return a * b; });
-  client.bind<"tick">([&](int value) {
+  client.bind<"tick">([&](int value) -> void {
     tick_called = true;
     tick_value = value;
   });
