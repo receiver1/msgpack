@@ -37,6 +37,10 @@
 | Timestamp extension (`type = -1`) | ✅ | ✅ | `std::chrono::time_point` |
 | Reserved marker `0xC1` | ❌ | ✅ | Invalid marker error on decode |      
 
+## Installation
+Just copy `msgpack.hpp` and `reflect.hpp` from `include` folder to your project & it ready to use.
+You can also copy `msgpack_rpc.hpp` to use RPC interface. But need to implement your own transort.
+
 ## Examples
 Examples can be found in the `examples/` directory.
 
