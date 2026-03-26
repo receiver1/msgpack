@@ -53,9 +53,7 @@ if (!client_result.has_value()) {
 auto client = std::move(*client_result);
 // Event-driven
 client.call<"sum">(5, 10)
-  .then([](std::error_code error, int result) 
-    -> void 
-  {
+  .then([](std::error_code error, int result) -> void {
     // All errors in one place
     if (error) {
       std::println("error: {:s}", error.message());
@@ -66,9 +64,7 @@ client.call<"sum">(5, 10)
   });
 client.notify<"ping">();
 // Full-duplex
-client.bind<"sum">([](int a, int b) 
-  -> std::expected<int, std::string> 
-{
+client.bind<"sum">([](int a, int b) -> std::expected<int, std::string> {
   if (a > 100) {
     // Returrn error with
     return std::unexpected("a too large");
