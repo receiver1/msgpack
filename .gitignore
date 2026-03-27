@@ -6,3 +6,4 @@ CMakeLists.txt.user
 
 # Clangd
 .cache/
+include/concurrent_queue.hpp
