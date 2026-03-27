@@ -47,14 +47,12 @@ Examples can be found in the `examples/` directory.
 Short RPC overview:
 ```cpp
 // Transport independent
-auto client_result = msgpack::rpc
-  ::open(scripted_transport{}, "loopback://demo");
+auto client = msgpack::rpc::client<scripted_transport>{};
 
 // Exceptions-free
-if (!client_result.has_value()) {
+if (!client.connect("loopback://demo")) {
   return;
 }
-auto client = std::move(*client_result);
 
 // Event-driven
 client.call<"sum">(5, 10)
