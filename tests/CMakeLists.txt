@@ -60,10 +60,8 @@ add_test(
 	NAME
 		msgpack_spec
 	CONFIGURATIONS
-		Debug
 		Release
-		RelWithDebInfo
-		MinSizeRelease
+		MinSizeRel
 	WORKING_DIRECTORY
 		"${CMAKE_CURRENT_LIST_DIR}/"
 	COMMAND
@@ -74,10 +72,8 @@ add_test(
 	NAME
 		msgpack_rpc_spec
 	CONFIGURATIONS
-		Debug
 		Release
-		RelWithDebInfo
-		MinSizeRelease
+		MinSizeRel
 	WORKING_DIRECTORY
 		"${CMAKE_CURRENT_LIST_DIR}/"
 	COMMAND

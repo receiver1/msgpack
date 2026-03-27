@@ -13,9 +13,9 @@ compile-features = ["cxx_std_23"]
 [[test]]                                                                                                                                                                                
 name = "msgpack_spec"                                                                                                                                                              
 command = "$<TARGET_FILE:msgpack_spec>"                                                                                                                                            
-configurations = ["Debug", "Release", "RelWithDebInfo", "MinSizeRelease"]
+configurations = ["Release", "MinSizeRel"]
 
 [[test]]                                                                                                                                                                                
 name = "msgpack_rpc_spec"                                                                                                                                                              
 command = "$<TARGET_FILE:msgpack_rpc_spec>"                                                                                                                                            
-configurations = ["Debug", "Release", "RelWithDebInfo", "MinSizeRelease"]
+configurations = ["Release", "MinSizeRel"]

@@ -1,5 +1,3 @@
-#include "msgpack_rpc.hpp"
-
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -19,13 +17,15 @@
 #include <utility>
 #include <vector>
 
+#include "msgpack_rpc.hpp"
+
 namespace {
 
 using bytes = std::vector<std::byte>;
 
-[[noreturn]] auto fail(std::string_view message,
-                       std::source_location location =
-                           std::source_location::current()) -> void {
+[[noreturn]] auto fail(
+    std::string_view message,
+    std::source_location location = std::source_location::current()) -> void {
   std::cerr << location.file_name() << ':' << location.line() << ": " << message
             << '\n';
   std::exit(EXIT_FAILURE);
@@ -40,30 +40,30 @@ auto check(bool condition, std::string_view message,
 }
 
 template <typename Actual, typename Expected>
-auto check_equal(const Actual& actual, const Expected& expected,
-                 std::string_view message = "values differ",
-                 std::source_location location =
-                     std::source_location::current()) -> void {
+auto check_equal(
+    const Actual& actual, const Expected& expected,
+    std::string_view message = "values differ",
+    std::source_location location = std::source_location::current()) -> void {
   if (!(actual == expected)) {
     fail(message, location);
   }
 }
 
 template <typename T>
-auto expect_error(const std::expected<T, std::error_code>& result,
-                  std::error_code code, std::string_view message,
-                  std::source_location location =
-                      std::source_location::current()) -> void {
+auto expect_error(
+    const std::expected<T, std::error_code>& result, std::error_code code,
+    std::string_view message,
+    std::source_location location = std::source_location::current()) -> void {
   if (result.has_value()) {
     fail(message, location);
   }
   check_equal(result.error(), code, message, location);
 }
 
-auto expect_error(const std::expected<void, std::error_code>& result,
-                  std::error_code code, std::string_view message,
-                  std::source_location location =
-                      std::source_location::current()) -> void {
+auto expect_error(
+    const std::expected<void, std::error_code>& result, std::error_code code,
+    std::string_view message,
+    std::source_location location = std::source_location::current()) -> void {
   if (result.has_value()) {
     fail(message, location);
   }
@@ -110,6 +110,11 @@ struct scripted_transport {
     return {};
   }
 
+  auto close() -> std::expected<void, std::error_code> {
+    endpoint.clear();
+    return {};
+  }
+
   auto send(std::span<const std::byte> bytes)
       -> std::expected<void, std::error_code> {
     outgoing.emplace_back(bytes.begin(), bytes.end());
@@ -144,18 +149,20 @@ auto make_notification(std::string_view method, Args&&... args) -> bytes {
 }
 
 template <typename Error, typename Result>
-auto make_response(std::uint32_t msgid, Error&& error, Result&& result) -> bytes {
+auto make_response(std::uint32_t msgid, Error&& error, Result&& result)
+    -> bytes {
   return pack_checked(std::tuple{msgpack::rpc::k_response_type, msgid,
                                  std::forward<Error>(error),
                                  std::forward<Result>(result)});
 }
 
 auto open_client() -> msgpack::rpc::client<scripted_transport> {
-  auto opened = msgpack::rpc::open(scripted_transport{}, "loopback://rpc");
+  msgpack::rpc::client<scripted_transport> client{};
+  auto opened = client.connect("loopback://rpc");
   if (!opened) {
     fail(opened.error().message());
   }
-  return std::move(*opened);
+  return std::move(client);
 }
 
 auto test_request_message_wire_format() -> void {
@@ -165,8 +172,8 @@ auto test_request_message_wire_format() -> void {
   check_equal(client.transport_handle().outgoing.size(), std::size_t{1},
               "request must be sent");
 
-  using request_type =
-      std::tuple<std::uint8_t, std::uint32_t, std::string, std::tuple<int, int>>;
+  using request_type = std::tuple<std::uint8_t, std::uint32_t, std::string,
+                                  std::tuple<int, int>>;
   const auto request =
       unpack_checked<request_type>(client.transport_handle().outgoing.front());
 
@@ -238,8 +245,8 @@ auto test_parse_response_id_and_detail_builders() -> void {
               response_type{msgpack::rpc::k_response_type, 9, nullptr, 42},
               "success response format mismatch");
 
-  const auto error = msgpack::rpc::detail::make_error_response_bytes(
-      11, std::string{"boom"});
+  const auto error =
+      msgpack::rpc::detail::make_error_response_bytes(11, std::string{"boom"});
   if (!error) {
     fail(error.error().message());
   }
@@ -316,7 +323,8 @@ auto test_remote_error_response() -> void {
   }
 
   check(called, "error callback must run");
-  check_equal(received_error, msgpack::rpc::make_error_code(msgpack::rpc::errc::remote_error),
+  check_equal(received_error,
+              msgpack::rpc::make_error_code(msgpack::rpc::errc::remote_error),
               "remote error must map to remote_error");
   check_equal(received_value, 0, "default value must be provided on error");
 }
@@ -336,9 +344,10 @@ auto test_request_dispatch_and_response() -> void {
 
   using response_type =
       std::tuple<std::uint8_t, std::uint32_t, std::nullptr_t, int>;
-  check_equal(unpack_checked<response_type>(client.transport_handle().outgoing.front()),
-              response_type{msgpack::rpc::k_response_type, 100, nullptr, 42},
-              "request response format mismatch");
+  check_equal(
+      unpack_checked<response_type>(client.transport_handle().outgoing.front()),
+      response_type{msgpack::rpc::k_response_type, 100, nullptr, 42},
+      "request response format mismatch");
 }
 
 auto test_notification_dispatch_without_response() -> void {
@@ -368,31 +377,39 @@ auto test_unknown_method_request_behavior() -> void {
   client.transport_handle().incoming.push_back(make_request(77, "missing", 1));
 
   auto polled = client.poll();
-  expect_error(polled, msgpack::rpc::make_error_code(msgpack::rpc::errc::unknown_method),
-               "unknown request method must surface unknown_method");
+  expect_error(
+      polled, msgpack::rpc::make_error_code(msgpack::rpc::errc::unknown_method),
+      "unknown request method must surface unknown_method");
 
   check_equal(client.transport_handle().outgoing.size(), std::size_t{1},
               "unknown request must still emit error response");
   using response_type =
       std::tuple<std::uint8_t, std::uint32_t, std::string, std::nullptr_t>;
-  check_equal(unpack_checked<response_type>(client.transport_handle().outgoing.front()),
-              response_type{msgpack::rpc::k_response_type, 77,
-                            std::string{"method not found"}, nullptr},
-              "unknown method response mismatch");
+  check_equal(
+      unpack_checked<response_type>(client.transport_handle().outgoing.front()),
+      response_type{msgpack::rpc::k_response_type, 77,
+                    std::string{"method not found"}, nullptr},
+      "unknown method response mismatch");
 }
 
 auto test_invalid_messages() -> void {
-  expect_error(msgpack::rpc::detail::parse_inbound_message(make_bytes({0x92, 0x00, 0x01})),
-               msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_message),
-               "short request must be invalid");
+  expect_error(
+      msgpack::rpc::detail::parse_inbound_message(
+          make_bytes({0x92, 0x00, 0x01})),
+      msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_message),
+      "short request must be invalid");
 
-  expect_error(msgpack::rpc::detail::parse_response_id(make_bytes({0x93, 0x01, 0x00, 0xc0})),
-               msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response),
-               "response must have four elements");
+  expect_error(
+      msgpack::rpc::detail::parse_response_id(
+          make_bytes({0x93, 0x01, 0x00, 0xc0})),
+      msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response),
+      "response must have four elements");
 
-  expect_error(msgpack::rpc::detail::parse_response_id(make_bytes({0x94, 0x02, 0x00, 0xc0, 0xc0})),
-               msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response_type),
-               "response type must be 1");
+  expect_error(
+      msgpack::rpc::detail::parse_response_id(
+          make_bytes({0x94, 0x02, 0x00, 0xc0, 0xc0})),
+      msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response_type),
+      "response type must be 1");
 }
 
 auto test_invalid_response_delivery() -> void {
@@ -406,12 +423,16 @@ auto test_invalid_response_delivery() -> void {
     received = error;
   });
 
-  client.transport_handle().incoming.push_back(make_bytes({0x93, 0x01, 0x00, 0xc0}));
+  client.transport_handle().incoming.push_back(
+      make_bytes({0x93, 0x01, 0x00, 0xc0}));
   auto polled = client.poll();
-  expect_error(polled,
-               msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response),
-               "malformed response must fail poll before callback dispatch");
-  check(!called, "callback must not run when response cannot be parsed as inbound message");
+  expect_error(
+      polled,
+      msgpack::rpc::make_error_code(msgpack::rpc::errc::invalid_response),
+      "malformed response must fail poll before callback dispatch");
+  check(!called,
+        "callback must not run when response cannot be parsed as inbound "
+        "message");
 
   client.transport_handle().incoming.clear();
   client.transport_handle().incoming.push_back(
@@ -430,9 +451,10 @@ auto test_unknown_response_id() -> void {
   client.transport_handle().incoming.push_back(make_response(999, nullptr, 7));
 
   auto polled = client.poll();
-  expect_error(polled,
-               msgpack::rpc::make_error_code(msgpack::rpc::errc::unknown_response_id),
-               "unknown response id must be rejected");
+  expect_error(
+      polled,
+      msgpack::rpc::make_error_code(msgpack::rpc::errc::unknown_response_id),
+      "unknown response id must be rejected");
 }
 
 struct test_case {
@@ -448,7 +470,8 @@ constexpr std::array k_tests{
     test_case{"out-of-order", test_out_of_order_responses},
     test_case{"remote-error", test_remote_error_response},
     test_case{"request-dispatch", test_request_dispatch_and_response},
-    test_case{"notification-dispatch", test_notification_dispatch_without_response},
+    test_case{"notification-dispatch",
+              test_notification_dispatch_without_response},
     test_case{"unknown-method", test_unknown_method_request_behavior},
     test_case{"invalid-messages", test_invalid_messages},
     test_case{"invalid-response-delivery", test_invalid_response_delivery},

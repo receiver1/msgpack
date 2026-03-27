@@ -44,6 +44,11 @@ struct scripted_transport {
     return {};
   }
 
+  auto close() -> std::expected<void, std::error_code> {
+    endpoint.clear();
+    return {};
+  }
+
   auto send(std::span<const std::byte> bytes)
       -> std::expected<void, std::error_code> {
     outgoing.emplace_back(bytes.begin(), bytes.end());
@@ -106,15 +111,12 @@ auto enqueue_notification(scripted_transport& transport,
 }
 
 int main() {
-  auto client_result =
-      msgpack::rpc::open(scripted_transport{}, "loopback://demo");
-  if (!client_result) {
-    printf("rpc transport error: %s\n",
-           client_result.error().message().c_str());
+  auto client = msgpack::rpc::client<scripted_transport>{};
+  auto opened = client.connect("loopback://demo");
+  if (!opened) {
+    printf("rpc transport error: %s\n", opened.error().message().c_str());
     return EXIT_FAILURE;
   }
-
-  auto client = std::move(*client_result);
 
   bool first_called = false;
   bool second_called = false;
